@@ -1,3 +1,4 @@
+use crate::devices::RememberedDevice;
 use serde::{Deserialize, Serialize};
 
 /// Profil complet, édité depuis l'interface et sauvegardé en TOML.
@@ -10,12 +11,55 @@ pub struct Profile {
     pub app: AppSettings,
     #[serde(default)]
     pub scenery: Scenery,
+    /// Appareils appairés, un par rôle au plus.
+    #[serde(default)]
+    pub devices: Vec<RememberedDevice>,
+    #[serde(default)]
+    pub strava: StravaSettings,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct AppSettings {
     /// Mode test : home trainer, cadence, FC et Click simulés, sans Bluetooth.
     pub test_mode: bool,
+    /// Caméra au départ : 0 proche, 1 arrière, 2 de côté, 3 haute.
+    pub camera: u8,
+    /// Décor : « reel », « cache » ou « simple ».
+    pub decor: String,
+    /// Click automatiques au départ (changement de vitesse virtuel).
+    pub auto_shift: bool,
+    /// Cycliste virtuel du mode test : « cadence » ou « puissance ».
+    pub test_rider: String,
+    /// Cadence (rpm) ou puissance (W) du cycliste virtuel.
+    pub test_value: f64,
+    /// Dernier parcours ouvert.
+    pub last_gpx: String,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            test_mode: false,
+            camera: 0,
+            decor: "reel".into(),
+            auto_shift: false,
+            test_rider: "cadence".into(),
+            test_value: 88.0,
+            last_gpx: String::new(),
+        }
+    }
+}
+
+/// Envoi des sorties sur Strava. Il faut créer une « application API » sur
+/// https://www.strava.com/settings/api (domaine de rappel : localhost).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct StravaSettings {
+    pub client_id: String,
+    pub client_secret: String,
+    /// Envoie chaque sortie enregistrée sans le demander.
+    pub auto_upload: bool,
 }
 
 /// Décor : relief, images aériennes et données OpenStreetMap.
@@ -119,7 +163,14 @@ impl Profile {
             },
             app: AppSettings::default(),
             scenery: Scenery::default(),
+            devices: Vec::new(),
+            strava: StravaSettings::default(),
         }
+    }
+
+    /// FTP utilisée pour les séances et la charge d'entraînement (200 W par défaut).
+    pub fn ftp(&self) -> f64 {
+        self.rider.ftp_w.unwrap_or(200) as f64
     }
 
     pub fn total_mass_kg(&self) -> f64 {

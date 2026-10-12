@@ -5,6 +5,7 @@
 //! - [`physics`] : modèle de forces, intégration de la vitesse, pente effective.
 //! - [`route`] : lecture d'un GPX, rééchantillonnage, pentes lissées.
 //! - [`ride`] : boucle de simulation d'une sortie.
+//! - [`record`] : enregistrement à 1 Hz, bilan et courbe de puissance.
 //! - [`protocol`] : encodage et décodage des trames BLE (FTMS, CSC, HRS).
 //! - [`devices`] : interface commune aux appareils réels ou simulés.
 //! - [`sim`] : mode test, avec home trainer et accessoires simulés.
@@ -15,6 +16,7 @@ pub mod devices;
 pub mod gearing;
 pub mod physics;
 pub mod protocol;
+pub mod record;
 pub mod ride;
 pub mod route;
 pub mod sim;
