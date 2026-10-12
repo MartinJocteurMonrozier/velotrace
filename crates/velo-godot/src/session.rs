@@ -224,14 +224,10 @@ impl Session {
             let wkg = get_f(&o, "w_per_kg", 3.0).clamp(0.5, 8.0);
             let spread = get_f(&o, "spread", 0.3).clamp(0.0, 2.0);
             let mut specs: Vec<OpponentSpec> = default_pack(wkg, count);
-            // Écart demandé : de wkg − spread à wkg + spread, du plus faible au plus fort.
+            // `spread` : écart entre deux coureurs successifs, centré sur `wkg`.
             for (i, s) in specs.iter_mut().enumerate() {
-                let f = if count > 1 {
-                    i as f64 / (count - 1) as f64 * 2.0 - 1.0
-                } else {
-                    0.0
-                };
-                s.w_per_kg = (wkg + f * spread).max(0.5);
+                let rank = i as f64 - (count as f64 - 1.0) / 2.0;
+                s.w_per_kg = (wkg + spread * rank).max(0.5);
             }
             let mut pack = Pack::new(specs, profile, altitude);
             // Grille de départ : deux par rang, juste devant le joueur.

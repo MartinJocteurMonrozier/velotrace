@@ -20,6 +20,8 @@ var devices: Node
 var strava: Node
 ## VeloHistory : sorties enregistrées et suivi à long terme.
 var history: Node
+## Sortie qui vient de se terminer : le menu affiche son bilan au retour.
+var finished_ride_id := -1
 
 
 func _ready() -> void:
@@ -46,9 +48,3 @@ func _service(cls: String) -> Node:
 	n.name = cls
 	add_child(n)
 	return n
-
-
-## Envoie la sortie sur Strava si l'envoi automatique est activé.
-func auto_upload(ride_id: int) -> void:
-	if ride_id >= 0 and ride.profile_get("strava.auto_upload") and strava.status().connected:
-		strava.upload_ride(ride_id)

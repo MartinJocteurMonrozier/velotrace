@@ -8,7 +8,7 @@ extends Control
 ## format (facultatif, remplace celui de l'axe dans l'infobulle),
 ## colors: PackedColorArray (facultatif, une couleur par barre)}.
 ##
-## Formats : "nombre", "duree" (s), "temps" (s écoulées, h:mm), "watts", "wkg",
+## Formats : "nombre", "duree" (s), "temps" (s écoulées, m:ss puis h:mm:ss), "watts", "wkg",
 ## "km" (valeur en km), "m", "heures", "date" (unix), "pourcent", ou un
 ## Callable(valeur: float, long: bool) -> String.
 
@@ -246,10 +246,7 @@ static func format_value(fmt: Variant, v: float, long := false) -> String:
 		"duree":
 			return Fmt.duration(v)
 		"temps":
-			if long:
-				return Fmt.hms(v)
-			var s := roundi(v)
-			return "%d:%02d" % [s / 3600, (s / 60) % 60]
+			return Fmt.hms(v) if long else Fmt.mss(v)
 		"watts":
 			return Fmt.num(v) + " W"
 		"wkg":

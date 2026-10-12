@@ -17,13 +17,14 @@ extends Node3D
 ##   --seance <n>           séance prédéfinie n (mode seance)
 ##   --adversaires <n>      nombre de coureurs virtuels (mode adversaires, 5 par défaut)
 ##   --wkg <x>              leur rapport poids puissance (3,0 par défaut)
+##   --ecran <nom>          sans --gpx : écran du menu à ouvrir (connections,
+##                          settings, history, training ; ride:<id> pour un bilan)
 
 const World := preload("res://scripts/world.gd")
 const Cyclist := preload("res://scripts/cyclist.gd")
 const Hud := preload("res://scripts/hud.gd")
 const Menu := preload("res://scripts/ui/menu.gd")
 const PauseMenu := preload("res://scripts/ui/pause_menu.gd")
-const RideDetail := preload("res://scripts/ui/ride_detail.gd")
 
 const DECORS := ["reel", "cache", "simple"]
 ## Échelle de rendu 3D (FSR) selon la qualité : l'interface reste nette.
@@ -62,6 +63,7 @@ var _capture_path := ""
 var _capture_after := 8.0
 var _ride_time := 0.0
 var _menu: CanvasLayer
+var _screen := ""
 var _pause: CanvasLayer
 var _opponents: Array[Node3D] = []
 var _finish_time := -1.0
@@ -103,6 +105,15 @@ func _ready() -> void:
 		_menu = Menu.new()
 		add_child(_menu)
 		_menu.start_ride.connect(_on_start_ride)
+		if App.finished_ride_id >= 0:
+			_menu.show_ride(App.finished_ride_id, true)
+			App.finished_ride_id = -1
+		elif _screen.begins_with("ride:"):
+			_menu.show_ride(_screen.trim_prefix("ride:").to_int())
+		elif _screen != "":
+			_menu.go(_screen)
+		if _capture_path != "":
+			get_tree().create_timer(_capture_after).timeout.connect(_capture)
 
 
 func _on_start_ride(cfg: Dictionary) -> void:
@@ -136,6 +147,8 @@ func _parse_args() -> void:
 				_cfg["intensity"] = 1.0
 			"--adversaires":
 				_cfg["opponents"] = {"count": val.to_int(), "w_per_kg": _cfg.get("opponents", {}).get("w_per_kg", 3.0), "spread": 0.3}
+			"--ecran":
+				_screen = val
 			"--wkg":
 				_cfg["opponents"] = {"count": _cfg.get("opponents", {}).get("count", 5), "w_per_kg": val.to_float(), "spread": 0.3}
 			"--accelere":
@@ -489,12 +502,9 @@ func _end_ride(save: bool) -> void:
 			push_warning(ride.error_message())
 		get_tree().reload_current_scene()
 		return
-	App.auto_upload(id)
-	_hud.visible = false
-	var detail := RideDetail.new()
-	add_child(detail)
-	detail.setup(id, true)
-	detail.closed.connect(func(): get_tree().reload_current_scene())
+	# Le bilan s'affiche dans le menu, une fois le décor libéré.
+	App.finished_ride_id = id
+	get_tree().reload_current_scene()
 
 
 func _capture() -> void:
