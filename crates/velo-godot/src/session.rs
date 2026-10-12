@@ -90,7 +90,11 @@ fn now_unix() -> i64 {
 
 fn get_f(d: &VarDictionary, key: &str, default: f64) -> f64 {
     d.get(key)
-        .and_then(|v| v.try_to::<f64>().ok().or_else(|| v.try_to::<i64>().ok().map(|i| i as f64)))
+        .and_then(|v| {
+            v.try_to::<f64>()
+                .ok()
+                .or_else(|| v.try_to::<i64>().ok().map(|i| i as f64))
+        })
         .unwrap_or(default)
 }
 
@@ -101,7 +105,9 @@ fn get_s(d: &VarDictionary, key: &str, default: &str) -> String {
 }
 
 fn get_b(d: &VarDictionary, key: &str, default: bool) -> bool {
-    d.get(key).and_then(|v| v.try_to::<bool>().ok()).unwrap_or(default)
+    d.get(key)
+        .and_then(|v| v.try_to::<bool>().ok())
+        .unwrap_or(default)
 }
 
 fn get_d(d: &VarDictionary, key: &str) -> VarDictionary {
@@ -227,7 +233,12 @@ impl Session {
                 };
                 s.w_per_kg = (wkg + f * spread).max(0.5);
             }
-            Some(Pack::new(specs, profile, altitude))
+            let mut pack = Pack::new(specs, profile, altitude);
+            // Grille de départ : deux par rang, juste devant le joueur.
+            for (i, o) in pack.opponents.iter_mut().enumerate() {
+                o.distance_m = 3.0 + (i / 2) as f64 * 2.2;
+            }
+            Some(pack)
         } else {
             None
         };

@@ -110,6 +110,13 @@ pub struct Pack {
 }
 
 impl Pack {
+    /// Place tous les coureurs à `distance_m` (essais, reprise d'une sortie).
+    pub fn skip_to(&mut self, distance_m: f64) {
+        for o in &mut self.opponents {
+            o.distance_m = distance_m.max(0.0);
+        }
+    }
+
     /// Les coureurs partent arrêtés sur la ligne, avec le vélo, le CdA et le
     /// Crr du profil.
     pub fn new(specs: Vec<OpponentSpec>, profile: &Profile, start_altitude: f64) -> Self {

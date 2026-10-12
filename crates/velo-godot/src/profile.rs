@@ -89,7 +89,10 @@ fn number(v: &Variant) -> Option<f64> {
 /// Liste d'entiers : tableau Godot ou texte « 36, 52 ».
 fn integers(v: &Variant) -> Option<Vec<i64>> {
     if let Ok(a) = v.try_to::<VarArray>() {
-        return a.iter_shared().map(|x| number(&x).map(|f| f.round() as i64)).collect();
+        return a
+            .iter_shared()
+            .map(|x| number(&x).map(|f| f.round() as i64))
+            .collect();
     }
     if let Ok(a) = v.try_to::<PackedInt32Array>() {
         return Some(a.as_slice().iter().map(|x| *x as i64).collect());
@@ -102,15 +105,27 @@ fn integers(v: &Variant) -> Option<Vec<i64>> {
 }
 
 /// Convertit `value` au type du champ actuel (ou deviné pour un champ absent).
-fn to_toml(current: Option<&toml::Value>, key: &str, value: &Variant) -> Result<Option<toml::Value>, String> {
+fn to_toml(
+    current: Option<&toml::Value>,
+    key: &str,
+    value: &Variant,
+) -> Result<Option<toml::Value>, String> {
     let bad = || format!("valeur invalide pour {key}");
     Ok(Some(match current {
         Some(toml::Value::Float(_)) => toml::Value::Float(number(value).ok_or_else(bad)?),
-        Some(toml::Value::Integer(_)) => toml::Value::Integer(number(value).ok_or_else(bad)?.round() as i64),
-        Some(toml::Value::Boolean(_)) => toml::Value::Boolean(value.try_to::<bool>().map_err(|_| bad())?),
+        Some(toml::Value::Integer(_)) => {
+            toml::Value::Integer(number(value).ok_or_else(bad)?.round() as i64)
+        }
+        Some(toml::Value::Boolean(_)) => {
+            toml::Value::Boolean(value.try_to::<bool>().map_err(|_| bad())?)
+        }
         Some(toml::Value::String(_)) => toml::Value::String(value.to_string()),
         Some(toml::Value::Array(_)) => toml::Value::Array(
-            integers(value).ok_or_else(bad)?.into_iter().map(toml::Value::Integer).collect(),
+            integers(value)
+                .ok_or_else(bad)?
+                .into_iter()
+                .map(toml::Value::Integer)
+                .collect(),
         ),
         // Champ facultatif absent (FTP inconnue) : un entier, 0 ou vide pour l'effacer.
         None => {
@@ -130,7 +145,9 @@ fn to_toml(current: Option<&toml::Value>, key: &str, value: &Variant) -> Result<
 /// Profil modifié, ou la raison du refus (en français).
 pub fn set(profile: &Profile, key: &str, value: &Variant) -> Result<Profile, String> {
     let mut root = toml::Value::try_from(profile).map_err(|e| e.to_string())?;
-    let (section, field) = key.rsplit_once('.').ok_or_else(|| format!("champ inconnu : {key}"))?;
+    let (section, field) = key
+        .rsplit_once('.')
+        .ok_or_else(|| format!("champ inconnu : {key}"))?;
     let table = section
         .split('.')
         .try_fold(&mut root, |v, k| v.get_mut(k))
@@ -140,13 +157,19 @@ pub fn set(profile: &Profile, key: &str, value: &Variant) -> Result<Profile, Str
     if !table.contains_key(field) && key != "rider.ftp_w" {
         return Err(format!("champ inconnu : {key}"));
     }
-    let current = if key == "rider.ftp_w" { None } else { table.get(field) };
+    let current = if key == "rider.ftp_w" {
+        None
+    } else {
+        table.get(field)
+    };
     let new = to_toml(current, key, value)?;
     match new {
         Some(v) => table.insert(field.to_string(), v),
         None => table.remove(field),
     };
-    let mut p: Profile = root.try_into().map_err(|e: toml::de::Error| e.message().to_string())?;
+    let mut p: Profile = root
+        .try_into()
+        .map_err(|e: toml::de::Error| e.message().to_string())?;
     p.bike.chainrings.sort_unstable();
     p.bike.cassette.sort_unstable();
     validate(&p)?;
@@ -163,31 +186,71 @@ fn check(ok: bool, msg: &str) -> Result<(), String> {
 
 /// Bornes raisonnables : évite une sortie absurde après une faute de frappe.
 pub fn validate(p: &Profile) -> Result<(), String> {
-    check((25.0..=200.0).contains(&p.rider.weight_kg), "le poids du cycliste doit être entre 25 et 200 kg")?;
-    check(p.rider.ftp_w.is_none_or(|f| (50..=600).contains(&f)), "la FTP doit être entre 50 et 600 W")?;
-    check((3.0..=40.0).contains(&p.bike.weight_kg), "le poids du vélo doit être entre 3 et 40 kg")?;
     check(
-        !p.bike.chainrings.is_empty() && p.bike.chainrings.len() <= 3 && p.bike.chainrings.iter().all(|c| (20..=70).contains(c)),
+        (25.0..=200.0).contains(&p.rider.weight_kg),
+        "le poids du cycliste doit être entre 25 et 200 kg",
+    )?;
+    check(
+        p.rider.ftp_w.is_none_or(|f| (50..=600).contains(&f)),
+        "la FTP doit être entre 50 et 600 W",
+    )?;
+    check(
+        (3.0..=40.0).contains(&p.bike.weight_kg),
+        "le poids du vélo doit être entre 3 et 40 kg",
+    )?;
+    check(
+        !p.bike.chainrings.is_empty()
+            && p.bike.chainrings.len() <= 3
+            && p.bike.chainrings.iter().all(|c| (20..=70).contains(c)),
         "plateaux : 1 à 3 valeurs entre 20 et 70 dents",
     )?;
     check(
-        p.bike.cassette.len() >= 2 && p.bike.cassette.len() <= 14 && p.bike.cassette.iter().all(|c| (9..=60).contains(c)),
+        p.bike.cassette.len() >= 2
+            && p.bike.cassette.len() <= 14
+            && p.bike.cassette.iter().all(|c| (9..=60).contains(c)),
         "cassette : 2 à 14 pignons entre 9 et 60 dents",
     )?;
-    check((1.5..=2.6).contains(&p.bike.wheel_circumference_m), "la circonférence de roue doit être entre 1,5 et 2,6 m")?;
-    check((0.1..=1.0).contains(&p.bike.cda_m2), "le CdA doit être entre 0,1 et 1 m²")?;
-    check((0.001..=0.03).contains(&p.bike.crr), "le Crr doit être entre 0,001 et 0,03")?;
-    check((0.8..=1.0).contains(&p.bike.drivetrain_efficiency), "le rendement doit être entre 80 et 100 %")?;
-    check((20..=70).contains(&p.trainer.physical_chainring), "plateau physique : entre 20 et 70 dents")?;
-    check((9..=60).contains(&p.trainer.physical_cog), "pignon physique : entre 9 et 60 dents")?;
-    check((0.0..=1.0).contains(&p.trainer.grade_difficulty), "la difficulté des pentes doit être entre 0 et 100 %")?;
+    check(
+        (1.5..=2.6).contains(&p.bike.wheel_circumference_m),
+        "la circonférence de roue doit être entre 1,5 et 2,6 m",
+    )?;
+    check(
+        (0.1..=1.0).contains(&p.bike.cda_m2),
+        "le CdA doit être entre 0,1 et 1 m²",
+    )?;
+    check(
+        (0.001..=0.03).contains(&p.bike.crr),
+        "le Crr doit être entre 0,001 et 0,03",
+    )?;
+    check(
+        (0.8..=1.0).contains(&p.bike.drivetrain_efficiency),
+        "le rendement doit être entre 80 et 100 %",
+    )?;
+    check(
+        (20..=70).contains(&p.trainer.physical_chainring),
+        "plateau physique : entre 20 et 70 dents",
+    )?;
+    check(
+        (9..=60).contains(&p.trainer.physical_cog),
+        "pignon physique : entre 9 et 60 dents",
+    )?;
+    check(
+        (0.0..=1.0).contains(&p.trainer.grade_difficulty),
+        "la difficulté des pentes doit être entre 0 et 100 %",
+    )?;
     check(
         (-0.4..=0.0).contains(&p.trainer.min_grade) && (0.0..=0.4).contains(&p.trainer.max_grade),
         "pentes limites : minimum entre -40 et 0 %, maximum entre 0 et 40 %",
     )?;
     check(p.app.camera <= 3, "caméra inconnue")?;
-    check(["reel", "cache", "simple"].contains(&p.app.decor.as_str()), "décor inconnu")?;
+    check(
+        ["reel", "cache", "simple"].contains(&p.app.decor.as_str()),
+        "décor inconnu",
+    )?;
     check(p.scenery.quality <= 2, "qualité inconnue")?;
-    check(["cadence", "puissance"].contains(&p.app.test_rider.as_str()), "cycliste virtuel inconnu")?;
+    check(
+        ["cadence", "puissance"].contains(&p.app.test_rider.as_str()),
+        "cycliste virtuel inconnu",
+    )?;
     Ok(())
 }

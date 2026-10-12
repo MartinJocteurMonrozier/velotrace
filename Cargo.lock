@@ -1692,8 +1692,12 @@ dependencies = [
 name = "velo-godot"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "godot",
+ "toml",
  "velo-core",
+ "velo-store",
+ "velo-strava",
  "velo-world",
 ]
 

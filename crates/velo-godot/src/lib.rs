@@ -17,8 +17,8 @@ use velo_core::config::Profile;
 use velo_core::devices::{DeviceKind, RememberedDevice, Shift};
 use velo_core::route::Route;
 use velo_core::sim::RiderModel;
-use velo_core::workout::Workout;
 use velo_core::terrain::Terrain;
+use velo_core::workout::Workout;
 use velo_world::mesh::MeshData;
 use velo_world::road::RoadPath;
 use velo_world::world::Texture;
@@ -981,7 +981,7 @@ impl VeloRide {
     #[func]
     fn workout_presets(&self) -> VarArray {
         let mut out = VarArray::new();
-        for w in Workout::presets() {
+        for w in velo_core::workout::presets() {
             out.push(&session::workout_to_dict(&w).to_variant());
         }
         out
@@ -1029,8 +1029,9 @@ impl VeloRide {
             d.set("cadence_rpm", o.cadence_rpm);
             d.set("finished", o.finished);
             d.set("grade_pct", s.ride.route.grade_at(o.distance_m) * 100.0);
-            // Chacun sa place dans la largeur de la route, surtout à gauche du joueur.
-            const LANES: [f64; 8] = [-0.9, 0.35, -1.7, -0.35, -1.25, 0.2, -2.1, -0.6];
+            // Chacun sa place dans la largeur de la route, à gauche du joueur
+            // pour ne jamais le traverser quand il double ou se fait doubler.
+            const LANES: [f64; 8] = [-1.0, -1.9, -1.45, -0.85, -2.2, -1.2, -1.7, -0.95];
             let lane = LANES[i % LANES.len()];
             match &self.path {
                 Some(p) => {

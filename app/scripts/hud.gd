@@ -30,20 +30,18 @@ var _board: VBoxContainer
 var _rider_kg := 70.0
 var _avg := 0.0
 
-## Couleurs des zones de puissance (fraction de FTP) : Z1 à Z6.
-const ZONE_LIMITS := [0.55, 0.75, 0.90, 1.05, 1.20]
-const ZONE_COLORS := [Color(0.62, 0.64, 0.68), Color(0.25, 0.55, 0.95), Color(0.30, 0.78, 0.40), Color(0.98, 0.82, 0.20), Color(0.98, 0.55, 0.18), Color(0.92, 0.22, 0.20)]
-
-
-static func zone_color(fraction: float) -> Color:
-	for i in ZONE_LIMITS.size():
-		if fraction < ZONE_LIMITS[i]:
-			return ZONE_COLORS[i]
-	return ZONE_COLORS[-1]
-
-
 ## Séance : une barre par étape (hauteur = part de FTP), avancement en blanc.
 class WorkoutBar extends Control:
+	## Couleurs des zones de puissance (fraction de FTP) : Z1 à Z6.
+	const ZONE_LIMITS := [0.55, 0.75, 0.90, 1.05, 1.20]
+	const ZONE_COLORS := [Color(0.62, 0.64, 0.68), Color(0.25, 0.55, 0.95), Color(0.30, 0.78, 0.40), Color(0.98, 0.82, 0.20), Color(0.98, 0.55, 0.18), Color(0.92, 0.22, 0.20)]
+
+	static func zone_color(fraction: float) -> Color:
+		for i in ZONE_LIMITS.size():
+			if fraction < ZONE_LIMITS[i]:
+				return ZONE_COLORS[i]
+		return ZONE_COLORS[-1]
+
 	var steps: Array = []
 	var total := 1.0
 	var elapsed := 0.0
