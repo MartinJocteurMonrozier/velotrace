@@ -18,11 +18,17 @@ pub struct Terrain {
 
 impl Terrain {
     pub fn new(route: &Route) -> Self {
-        let points: Vec<_> = route
-            .points
-            .iter()
-            .map(|p| (p.x, p.y, p.elevation_m))
-            .collect();
+        Self::from_points(
+            route
+                .points
+                .iter()
+                .map(|p| (p.x, p.y, p.elevation_m))
+                .collect(),
+        )
+    }
+
+    /// Index sur une ligne quelconque : (x est, y nord, altitude) par point.
+    pub fn from_points(points: Vec<(f64, f64, f64)>) -> Self {
         let mut buckets: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
         for (i, &(x, y, _)) in points.iter().enumerate() {
             buckets.entry(key(x, y)).or_default().push(i);

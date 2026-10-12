@@ -45,9 +45,13 @@ Au menu, **Décor réel** télécharge une fois, puis garde en cache (`~/.cache/
 
 - le **relief** (tuiles « terrarium » sur AWS, ~13 m) ; l'altitude du parcours en est tirée puis lissée, pour des pentes fidèles ;
 - les **images aériennes** de l'IGN (BD ORTHO®, France) plaquées sur le sol ; ailleurs ou hors connexion, le sol est coloré d'après l'altitude, la pente et OpenStreetMap ;
-- **OpenStreetMap** via Overpass : forêts, eau, bâtiments, routes et rivières.
+- **OpenStreetMap** via Overpass (avec deux serveurs de secours si le premier ne répond pas) : forêts, eau, bâtiments, routes et rivières.
 
-Près du parcours, des arbres simples poussent là où OSM indique une forêt ou là où l'image aérienne est vert sombre ; les bâtiments sont extrudés à leur hauteur, les routes et rivières drapées sur le relief, les lacs posés à plat.
+![Route réaliste : accotements, buissons et balises](docs/captures/route-realiste.jpg)
+
+La route suit un tracé lissé, rééchantillonné tous les mètres : enrobé avec grain, rustines, traces de roues et marquages usés, accotements en gravier puis en herbe, buissons sur les bords et balises J6 tous les 50 m. Le relief est aplani sous la chaussée puis rejoint le terrain sur une trentaine de mètres, il ne la coupe plus. Le cycliste tient sa droite en montée et coupe les virages à la corde sur le plat et en descente, en s'inclinant selon la vitesse.
+
+Près du parcours, des sapins et des feuillus poussent là où OSM indique une forêt ou là où l'image aérienne est vert sombre (version détaillée de près, simplifiée au-delà) ; les bâtiments sont extrudés à leur hauteur avec des fenêtres et restent visibles au loin, les routes et rivières sont drapées sur le relief, les lacs posés à plat. Près de la route, l'herbe des accotements et un grain de détail sur le sol masquent le flou des images aériennes.
 
 **Qualité** basse, moyenne ou haute : distance du décor, finesse des images (2 m, 1 m ou 0,5 m par pixel), densité et portée des arbres, ombres, anticrénelage et échelle de rendu (FSR). L'affichage est plafonné à 60 images/s. Les carrés de décor détaillés (512 m) sont générés en arrière-plan autour du cycliste et libérés derrière lui ; au loin, des carrés de 2 km peu détaillés. Sur une Intel HD 630, commence en qualité moyenne.
 

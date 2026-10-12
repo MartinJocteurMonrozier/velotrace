@@ -12,6 +12,7 @@ pub mod geo;
 pub mod mesh;
 pub mod osm;
 pub mod raster;
+pub mod road;
 pub mod stream;
 pub mod tiles;
 pub mod world;

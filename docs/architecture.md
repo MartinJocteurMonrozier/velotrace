@@ -104,11 +104,16 @@ Pipeline d'import exécuté une fois par GPX, résultat mis en cache sur disque 
 
 **Implémentation actuelle (crate `velo-world`)** :
 
-- relief : tuiles terrarium zoom 13 (~13 m), couloir de 2,5 à 6 km selon la qualité ; altitude du parcours = relief, médiane glissante 100 m puis moyenne 200 m (Alpe d'Huez : D+ 1 072 m) ; sol aplani sous la chaussée sur 5 à 40 m ;
-- deux niveaux de décor : grands carrés de 2 048 m (maille 32 à 64 m, texture 256 ou 512 px) construits au chargement, et carrés détaillés de 512 m (maille 8 m, texture 256 à 1 024 px, arbres, bâtiments, routes, eau) générés par des fils de travail autour du cycliste et libérés derrière lui. Un masque d'un texel par carré de 512 m retire le grand carré là où un carré détaillé est chargé, et des jupes cachent les jointures ;
+- relief : tuiles terrarium zoom 13 (~13 m), couloir de 2,5 à 6 km selon la qualité ; altitude du parcours = relief, médiane glissante 100 m puis moyenne 200 m (Alpe d'Huez : D+ 1 072 m) ; sol posé à plat sous la chaussée et les accotements (5 m de l'axe), puis fondu vers le relief jusqu'à 28 m ;
+- deux niveaux de décor : grands carrés de 2 048 m (maille 32 à 64 m, texture 256 ou 512 px) construits au chargement, et carrés détaillés de 512 m (maille 4 à 5,3 m, texture 256 à 1 024 px, arbres, bâtiments, routes, eau) générés par des fils de travail autour du cycliste et libérés derrière lui. Un masque d'un texel par carré de 512 m retire le grand carré là où un carré détaillé est chargé, et des jupes cachent les jointures ;
 - images aériennes : WMTS IGN par défaut, URL modifiable dans le profil (`[scenery]`), repli sur trois zooms moins fins puis sur une couleur calculée (altitude, pente, occupation OSM) ;
 - arbres : cases fixes de 5,5 à 9 m ; un arbre y pousse selon OSM (forêt) et la couleur de l'image (vert sombre), sapin ou feuillu selon `leaf_type` et l'altitude ; MultiMesh par carré avec distance d'affichage ;
-- OSM : requête Overpass « around » le long du parcours, mise en cache ; ou fichier JSON (`--osm-fichier`).
+- OSM : requête Overpass « around » le long du parcours (bâtiments sur un couloir plus large, jusqu'à 2,5 km), mise en cache, avec deux miroirs de secours ; ou fichier JSON (`--osm-fichier`) ;
+- route (`road.rs`) : axe lissé (gaussienne σ 5 m) puis rééchantillonné tous les mètres en Catmull-Rom ; maillage 4 sommets par mètre (chaussée de 6 m, accotements de 1,3 m abaissés de 25 cm) découpé en tronçons de 200 m ; balises J6 tous les 50 m ; le shader dessine enrobé, rustines, lignes de rive et tirets usés, gravier puis herbe sur les accotements, et peint l'herbe sur l'image aérienne jusqu'à 11 m ;
+- trajectoire du cycliste : 1,9 m à droite de l'axe, décalée vers l'intérieur du virage selon la courbure (gain 50) quand la pente est nulle ou négative, bornée entre 0,6 et 2,7 m puis lissée sur 10 m ; cap mesuré sur ±2 m et inclinaison atan(v²κ/g) ;
+- arbres et buissons : maillages faits main (sapin à 4 étages tombants, feuillu en 5 boules), vent dans le shader ; instances regroupées par cases de 128 m avec une version détaillée jusqu'à 110 à 260 m et une version simplifiée au-delà ;
+- bâtiments : couleurs de murs et toits variées, fenêtres tous les 3 m dessinées par shader ; aussi présents dans les grands carrés ;
+- sol : texture de bruit superposée à l'image de près (25 à 260 m) pour masquer le flou.
 
 L'**avatar** : modèle de cycliste et de vélo libres de droits (ou réalisés sous Blender), pédalage synchronisé sur la cadence réelle avec une IK des jambes (pieds liés aux pédales), position du buste selon la pente et la vitesse. Caméras : arrière (par défaut), première personne, drone.
 

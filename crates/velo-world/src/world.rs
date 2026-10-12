@@ -4,7 +4,8 @@ use crate::elevation::{smooth_profile, Dem};
 use crate::geo::{mercator_px_x, mercator_px_y, meters_per_px, zoom_for, LocalProjection};
 use crate::mesh::{building, flat_polygon, ribbon, terrain_grid, Instances, MeshData};
 use crate::osm::{Cover, LineKind, OsmData};
-use crate::raster::{cover_grid, ground_color, looks_like_trees, rand01};
+use crate::raster::{cover_grid, ground_color, looks_like_trees, noise, rand01};
+use crate::road::{RoadPath, HALF_WIDTH, VERGE};
 use crate::tiles::{TileCache, TileSource};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -20,8 +21,10 @@ pub const NEAR_SIZE: f64 = 512.0;
 pub const FAR_SIZE: f64 = 2048.0;
 /// Zoom des tuiles d'altitude (≈ 13 m par pixel dans les Alpes).
 const DEM_ZOOM: u8 = 13;
-/// Distance au parcours en deçà de laquelle le sol rejoint la chaussée.
-const ROAD_BLEND_M: f64 = 40.0;
+/// Distance à l'axe en deçà de laquelle le sol rejoint la chaussée.
+const ROAD_BLEND_M: f64 = 28.0;
+/// Plateforme plane sous la chaussée et les accotements (demi-largeur, m).
+const ROAD_FLAT_M: f64 = HALF_WIDTH + VERGE + 0.7;
 /// Pas du parcours (m), identique à celui de velo-godot.
 const ROUTE_STEP_M: f64 = 5.0;
 
@@ -50,7 +53,7 @@ impl Quality {
                 far_px: 256,
                 near_px: 256,
                 far_cells: 32,
-                near_cells: 48,
+                near_cells: 96,
                 tree_radius_m: 220.0,
                 tree_cell_m: 9.0,
             },
@@ -60,7 +63,7 @@ impl Quality {
                 far_px: 512,
                 near_px: 512,
                 far_cells: 48,
-                near_cells: 64,
+                near_cells: 128,
                 tree_radius_m: 350.0,
                 tree_cell_m: 7.0,
             },
@@ -70,7 +73,7 @@ impl Quality {
                 far_px: 512,
                 near_px: 1024,
                 far_cells: 64,
-                near_cells: 64,
+                near_cells: 128,
                 tree_radius_m: 500.0,
                 tree_cell_m: 5.5,
             },
@@ -125,6 +128,8 @@ pub struct FarChunk {
     pub center: (f64, f64),
     pub mesh: MeshData,
     pub texture: Texture,
+    /// Bâtiments vus de loin (cachés là où un carré détaillé est chargé).
+    pub buildings: MeshData,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -140,6 +145,7 @@ pub struct ChunkDetail {
     pub texture: Texture,
     pub conifers: Instances,
     pub broadleaves: Instances,
+    pub bushes: Instances,
     pub buildings: MeshData,
     pub roads: MeshData,
     pub water: MeshData,
@@ -149,6 +155,10 @@ pub struct World {
     pub proj: LocalProjection,
     /// Parcours avec l'altitude du relief si demandé.
     pub route: Route,
+    /// Tracé lissé de la route, tous les mètres.
+    pub path: RoadPath,
+    /// OpenStreetMap a-t-il fourni des données ?
+    pub osm_ok: bool,
     pub quality: Quality,
     pub base_elevation: f64,
     pub far: Vec<FarChunk>,
@@ -230,11 +240,19 @@ impl World {
         let fallback_elevation =
             route.points.iter().map(|p| p.elevation_m).sum::<f64>() / route.points.len() as f64;
         let base_elevation = route.points[0].elevation_m;
-        let index = Terrain::new(&route);
+        let path = RoadPath::new(&route);
+        let index = Terrain::from_points(path.axis_points(2));
 
         // 3. OpenStreetMap.
         progress(0.27, "OpenStreetMap : forêts, eau, bâtiments, routes…");
-        let (osm, osm_note) = load_osm(opts, &cache, &route, &proj, quality.near_margin_m);
+        let (osm, osm_note) = load_osm(
+            opts,
+            &cache,
+            &route,
+            &proj,
+            quality.near_margin_m,
+            quality.far_margin_m.min(2500.0),
+        );
         if cancel.load(Ordering::Relaxed) {
             return Err("annulé".into());
         }
@@ -246,6 +264,8 @@ impl World {
         let mut world = World {
             proj,
             route,
+            path,
+            osm_ok: !osm.is_empty(),
             quality,
             base_elevation,
             far: Vec::new(),
@@ -329,8 +349,8 @@ impl World {
         let dem = self.dem_height(x, n);
         match self.index.nearest(x, n, ROAD_BLEND_M) {
             Some((d, road)) => {
-                let w = 1.0 - smoothstep(5.0, ROAD_BLEND_M, d);
-                dem + (road - 0.25 - dem) * w
+                let w = 1.0 - smoothstep(ROAD_FLAT_M, ROAD_BLEND_M, d);
+                dem + (road - 0.35 - dem) * w
             }
             None => dem,
         }
@@ -360,6 +380,7 @@ impl World {
             center,
             mesh,
             texture: texture_from(&rgb, &from_img, q.far_px),
+            buildings: self.buildings_in(center, half),
         }
     }
 
@@ -376,8 +397,9 @@ impl World {
             &|i, j| self.ground(cx - half + i as f64 * step, cn + half - j as f64 * step) - base,
             12.0,
         );
-        let (rgb, from_img) =
+        let (mut rgb, from_img) =
             self.compose(cx - half, cn + half, NEAR_SIZE, q.near_px, self.near_zoom);
+        self.paint_verges(&mut rgb, cx - half, cn + half, q.near_px);
         let image_px = |x: f64, n: f64| {
             let i = ((x - (cx - half)) / NEAR_SIZE * q.near_px as f64) as usize;
             let j = (((cn + half) - n) / NEAR_SIZE * q.near_px as f64) as usize;
@@ -478,40 +500,9 @@ impl World {
             }
         }
 
-        // Bâtiments dont le centre tombe dans le carré.
+        detail.buildings = self.buildings_in((cx, cn), half);
+        detail.bushes = self.bushes_in((cx, cn), half, &covers, &image_px);
         let inside = |p: (f64, f64)| (p.0 - cx).abs() <= half && (p.1 - cn).abs() <= half;
-        for b in &self.osm.buildings {
-            let c = b.bbox.center();
-            if !inside(c) || self.distance_to_route(c.0, c.1, 6.0) < 5.0 {
-                continue;
-            }
-            let heights: Vec<f64> = b.ring.iter().map(|&(x, n)| self.ground(x, n)).collect();
-            let min = heights.iter().copied().fold(f64::MAX, f64::min);
-            let mean = heights.iter().sum::<f64>() / heights.len() as f64;
-            let ring: Vec<(f64, f64)> = b.ring.iter().map(|&(x, n)| (x - cx, -(n - cn))).collect();
-            let r = |k: i64| rand01(b.id as i64, 11, k) as f32;
-            let walls = [
-                [0.86, 0.83, 0.76, 1.0],
-                [0.92, 0.90, 0.86, 1.0],
-                [0.80, 0.70, 0.56, 1.0],
-                [0.62, 0.48, 0.34, 1.0],
-            ];
-            let roofs = [
-                [0.48, 0.24, 0.18, 1.0],
-                [0.30, 0.30, 0.32, 1.0],
-                [0.40, 0.30, 0.24, 1.0],
-            ];
-            let wall = walls[(r(1) * walls.len() as f32) as usize % walls.len()];
-            let roof = roofs[(r(2) * roofs.len() as f32) as usize % roofs.len()];
-            building(
-                &mut detail.buildings,
-                &ring,
-                min - 0.6 - base,
-                mean + b.height_m - base,
-                wall,
-                roof,
-            );
-        }
 
         // Routes et rivières drapées sur le sol, plans d'eau.
         let (min, max) = ((cx - half, cn - half), (cx + half, cn + half));
@@ -566,6 +557,161 @@ impl World {
             );
         }
         detail
+    }
+
+    /// Bâtiments OSM dont le centre tombe dans le carré, relatifs à son centre.
+    fn buildings_in(&self, center: (f64, f64), half: f64) -> MeshData {
+        let (cx, cn) = center;
+        let base = self.base_elevation;
+        let mut mesh = MeshData::default();
+        let walls = [
+            [0.86, 0.83, 0.76, 1.0],
+            [0.92, 0.90, 0.86, 1.0],
+            [0.80, 0.70, 0.56, 1.0],
+            [0.62, 0.48, 0.34, 1.0],
+            [0.74, 0.72, 0.68, 1.0],
+        ];
+        let roofs = [
+            [0.48, 0.24, 0.18, 1.0],
+            [0.30, 0.30, 0.32, 1.0],
+            [0.40, 0.30, 0.24, 1.0],
+            [0.22, 0.22, 0.24, 1.0],
+        ];
+        for b in &self.osm.buildings {
+            let c = b.bbox.center();
+            if (c.0 - cx).abs() > half || (c.1 - cn).abs() > half {
+                continue;
+            }
+            // Emprise mal placée sur la chaussée : on l'ignore.
+            if self.distance_to_route(c.0, c.1, ROAD_FLAT_M) < HALF_WIDTH + 1.0 {
+                continue;
+            }
+            let heights: Vec<f64> = b.ring.iter().map(|&(x, n)| self.ground(x, n)).collect();
+            let min = heights.iter().copied().fold(f64::MAX, f64::min);
+            let mean = heights.iter().sum::<f64>() / heights.len() as f64;
+            let ring: Vec<(f64, f64)> = b.ring.iter().map(|&(x, n)| (x - cx, -(n - cn))).collect();
+            let r = |k: i64| rand01(b.id as i64, 11, k) as f32;
+            let wall = walls[(r(1) * walls.len() as f32) as usize % walls.len()];
+            let roof = roofs[(r(2) * roofs.len() as f32) as usize % roofs.len()];
+            building(
+                &mut mesh,
+                &ring,
+                min - 0.6 - base,
+                mean + b.height_m - base,
+                wall,
+                roof,
+            );
+        }
+        mesh
+    }
+
+    /// Buissons et arbustes au bord de la route, hors bâtiments, eau et routes.
+    fn bushes_in(
+        &self,
+        center: (f64, f64),
+        half: f64,
+        covers: &crate::raster::Grid<u8>,
+        photo: &dyn Fn(f64, f64) -> Option<[u8; 3]>,
+    ) -> Instances {
+        let (cx, cn) = center;
+        let base = self.base_elevation;
+        let mut out = Instances::default();
+        let edge = HALF_WIDTH + VERGE;
+        for (k, p) in self.path.samples.iter().enumerate() {
+            if (p.x - cx).abs() > half + 8.0 || (p.n - cn).abs() > half + 8.0 {
+                continue;
+            }
+            let (rx, rn) = p.right();
+            for (side, sign) in [(0i64, -1.0), (1, 1.0)] {
+                let key = k as i64 * 2 + side;
+                let r = |c: i64| rand01(key, 77, c);
+                let off = sign * (edge + 0.5 + r(1) * 2.8);
+                let along = (r(2) - 0.5) * 0.8;
+                let x = p.x + rx * off + p.tangent.0 * along;
+                let n = p.n + rn * off + p.tangent.1 * along;
+                if (x - cx).abs() > half || (n - cn).abs() > half {
+                    continue;
+                }
+                // Une autre partie du parcours (lacet) passe tout près : pas de buisson.
+                if self.distance_to_route(x, n, edge + 0.4) < edge + 0.3 {
+                    continue;
+                }
+                let cover = Cover::from_u8(covers.at(x, n).unwrap_or(0));
+                if cover.blocks_trees() {
+                    continue;
+                }
+                let mut density = match cover {
+                    Cover::Urban => 0.06,
+                    c if c.is_forest() => 0.45,
+                    Cover::Scrub => 0.5,
+                    Cover::Rock | Cover::Glacier => 0.05,
+                    _ => 0.28,
+                };
+                // Haies et fourrés par endroits plutôt qu'au hasard régulier.
+                density *= 0.4 + 1.2 * noise(p.s * 0.02, sign * 7.0);
+                if let Some([pr, pg, pb]) = photo(x, n) {
+                    let green = 2 * i32::from(pg) - i32::from(pr) - i32::from(pb);
+                    if green < 0 {
+                        density *= 0.3;
+                    }
+                }
+                if r(3) >= density {
+                    continue;
+                }
+                let h = 0.6 + r(4) * 1.1;
+                let w = h * (1.2 + r(5) * 0.8);
+                let shade = 0.8 + 0.35 * r(6) as f32;
+                let y = self.ground(x, n);
+                out.push(
+                    [x - cx, y - base - 0.15, -(n - cn)],
+                    r(7) * std::f64::consts::TAU,
+                    w,
+                    h,
+                    [shade * 0.95, shade, shade * 0.8, 1.0],
+                );
+            }
+        }
+        out
+    }
+
+    /// Près de la route, l'image aérienne (floue, et dont la vraie route ne
+    /// tombe jamais exactement sous la nôtre) cède la place à un accotement
+    /// herbeux qui se fond dans l'image à une dizaine de mètres.
+    fn paint_verges(&self, rgb: &mut [[u8; 3]], x0: f64, n1: f64, size: usize) {
+        let px = NEAR_SIZE / size as f64;
+        let reach = 11.0;
+        let mut near_road: crate::raster::Grid<u8> =
+            crate::raster::Grid::new(x0, n1, NEAR_SIZE, size, 0);
+        for w in self.path.samples.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if (a.x - x0 - NEAR_SIZE / 2.0).abs() > NEAR_SIZE / 2.0 + reach
+                || (n1 - NEAR_SIZE / 2.0 - a.n).abs() > NEAR_SIZE / 2.0 + reach
+            {
+                continue;
+            }
+            near_road.draw_line(&[(a.x, a.n), (b.x, b.n)], reach * 2.0, 1);
+        }
+        for j in 0..size {
+            for i in 0..size {
+                let k = j * size + i;
+                if near_road.data[k] == 0 {
+                    continue;
+                }
+                let (x, n) = (x0 + (i as f64 + 0.5) * px, n1 - (j as f64 + 0.5) * px);
+                let d = self.distance_to_route(x, n, reach);
+                let w = 1.0 - smoothstep(ROAD_FLAT_M, reach, d);
+                if w <= 0.0 {
+                    continue;
+                }
+                let v = noise(x * 0.35, n * 0.35) * 0.6 + noise(x * 1.7, n * 1.7) * 0.4;
+                let verge = [0.34 + 0.10 * v, 0.40 + 0.08 * v, 0.20 + 0.04 * v];
+                let c = &mut rgb[k];
+                for ch in 0..3 {
+                    let img = f64::from(c[ch]) / 255.0;
+                    c[ch] = ((img + (verge[ch] - img) * w) * 255.0).round() as u8;
+                }
+            }
+        }
     }
 
     /// Couleurs d'un carré du sol vu du ciel : image aérienne quand elle
@@ -856,6 +1002,7 @@ fn load_osm(
     route: &Route,
     proj: &LocalProjection,
     radius_m: f64,
+    building_radius_m: f64,
 ) -> (OsmData, String) {
     let parse = |text: &str, source: &str| match OsmData::from_overpass_json(text, proj) {
         Ok(d) => {
@@ -888,7 +1035,7 @@ fn load_osm(
         .chain(route.points.last())
         .map(|p| (p.lat, p.lon))
         .collect();
-    let query = OsmData::overpass_query(&path, radius_m);
+    let query = OsmData::overpass_query(&path, radius_m, building_radius_m);
     let file = cache
         .root()
         .join("osm")
@@ -896,17 +1043,48 @@ fn load_osm(
     if let Ok(text) = std::fs::read_to_string(&file) {
         return parse(&text, "cache");
     }
-    match cache.post_form(opts.overpass_url.trim(), &[("data", &query)]) {
-        Ok(text) => {
-            let result = parse(&text, "Overpass");
-            if !result.0.is_empty() {
-                let _ = std::fs::create_dir_all(file.parent().unwrap());
-                let _ = std::fs::write(&file, &text);
-            }
-            result
+    // Le serveur principal est souvent saturé : on essaie aussi des miroirs.
+    let mut servers = vec![opts.overpass_url.trim().to_string()];
+    for mirror in OVERPASS_MIRRORS {
+        if !servers.iter().any(|s| s == mirror) {
+            servers.push(mirror.to_string());
         }
-        Err(e) => (OsmData::default(), format!("Overpass injoignable ({e})")),
     }
+    let mut errors = Vec::new();
+    for server in &servers {
+        match cache.post_form(server, &[("data", &query)]) {
+            Ok(text) => {
+                let result = parse(&text, "Overpass");
+                if !result.0.is_empty() {
+                    let _ = std::fs::create_dir_all(file.parent().unwrap());
+                    let _ = std::fs::write(&file, &text);
+                    return result;
+                }
+                errors.push(format!("{} : réponse vide", host_of(server)));
+            }
+            Err(e) => errors.push(format!("{} : {e}", host_of(server))),
+        }
+        if !cache.is_online() {
+            break;
+        }
+    }
+    (
+        OsmData::default(),
+        format!("OpenStreetMap indisponible ({})", errors.join(" ; ")),
+    )
+}
+
+/// Serveurs Overpass essayés après celui du profil.
+const OVERPASS_MIRRORS: [&str; 2] = [
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+];
+
+fn host_of(url: &str) -> &str {
+    url.split("//")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .unwrap_or(url)
 }
 
 /// Dossier de cache propre à chaque URL : changer de source ne mélange pas les tuiles.

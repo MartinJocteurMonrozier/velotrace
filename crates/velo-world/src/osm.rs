@@ -242,16 +242,20 @@ impl OsmData {
         });
     }
 
-    /// Requête Overpass pour le couloir autour du parcours (points lat/lon).
-    pub fn overpass_query(path: &[(f64, f64)], radius_m: f64) -> String {
+    /// Requête Overpass pour le couloir autour du parcours (points lat/lon) :
+    /// tout sur `radius_m`, et les bâtiments jusqu'à `building_radius_m` pour
+    /// les voir de loin (villages de l'autre côté de la vallée).
+    pub fn overpass_query(path: &[(f64, f64)], radius_m: f64, building_radius_m: f64) -> String {
         let coords: Vec<String> = path
             .iter()
             .map(|(lat, lon)| format!("{lat:.5},{lon:.5}"))
             .collect();
-        let around = format!("(around:{radius_m:.0},{})", coords.join(","));
+        let around = |r: f64| format!("(around:{r:.0},{})", coords.join(","));
+        let a = around(radius_m);
         format!(
             "[out:json][timeout:180];(\
-             way[building]{a};\
+             way[building]{b};\
+             relation[type=multipolygon][building]{b};\
              way[highway]{a};\
              way[waterway~\"^(river|stream|canal|ditch|drain)$\"]{a};\
              way[natural~\"^(wood|water|scrub|heath|grassland|bare_rock|scree|glacier)$\"]{a};\
@@ -259,7 +263,7 @@ impl OsmData {
              relation[type=multipolygon][natural~\"^(wood|water|scrub|bare_rock|scree|glacier)$\"]{a};\
              relation[type=multipolygon][landuse~\"^(forest|meadow|farmland|residential|reservoir)$\"]{a};\
              );out geom qt;",
-            a = around
+            b = around(building_radius_m.max(radius_m)),
         )
     }
 }
@@ -514,8 +518,9 @@ mod tests {
 
     #[test]
     fn query_mentions_the_corridor() {
-        let q = OsmData::overpass_query(&[(45.0, 6.0), (45.1, 6.1)], 800.0);
-        assert!(q.contains("around:800,45.00000,6.00000,45.10000,6.10000"));
+        let q = OsmData::overpass_query(&[(45.0, 6.0), (45.1, 6.1)], 800.0, 2000.0);
+        assert!(q.contains("way[highway](around:800,45.00000,6.00000,45.10000,6.10000)"));
+        assert!(q.contains("way[building](around:2000,"));
         assert!(q.ends_with("out geom qt;"));
     }
 }

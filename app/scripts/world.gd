@@ -9,6 +9,7 @@ const TILE_CELLS := 20
 const TERRAIN_MARGIN := 450.0
 const ROAD_SHADER := preload("res://shaders/road.gdshader")
 const RealWorld := preload("res://scripts/real_world.gd")
+const Vegetation := preload("res://scripts/vegetation.gd")
 ## Ombres du soleil selon la qualité : distance maximale et découpage.
 const SHADOW_DISTANCE := [60.0, 120.0, 220.0]
 ## Brouillard : distance à laquelle le décor disparaît presque.
@@ -20,7 +21,7 @@ const FOG_REACH := [3500.0, 5000.0, 7000.0]
 static func build(ride: Object, parent: Node3D, base_elev: float, quality := 1, real := false) -> Node3D:
 	parent.add_child(_environment(quality))
 	parent.add_child(_sun(quality))
-	parent.add_child(_road(ride.route_points(), ride.route_distances(), base_elev))
+	parent.add_child(_road(ride, base_elev, quality))
 	if real:
 		var rw := RealWorld.new()
 		rw.name = "DecorReel"
@@ -106,38 +107,31 @@ static func _terrain(ride: Object, base_elev: float) -> Node3D:
 	return root
 
 
-static func _road(points: PackedVector3Array, distances: PackedFloat32Array, base_elev: float) -> MeshInstance3D:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var count := points.size()
-	for i in count:
-		var prev := points[maxi(i - 1, 0)]
-		var next := points[mini(i + 1, count - 1)]
-		var t := Vector3(next.x - prev.x, 0.0, next.z - prev.z).normalized()
-		var right := Vector3(-t.z, 0.0, t.x)
-		var p := points[i] - Vector3(0.0, base_elev - 0.05, 0.0)
-		st.set_normal(Vector3.UP)
-		st.set_uv(Vector2(0.0, distances[i]))
-		st.add_vertex(p - right * ROAD_HALF_WIDTH)
-		st.set_normal(Vector3.UP)
-		st.set_uv(Vector2(1.0, distances[i]))
-		st.add_vertex(p + right * ROAD_HALF_WIDTH)
-	for i in count - 1:
-		var a := i * 2
-		st.add_index(a)
-		st.add_index(a + 2)
-		st.add_index(a + 1)
-		st.add_index(a + 1)
-		st.add_index(a + 2)
-		st.add_index(a + 3)
+## Chaussée lissée (un point par mètre) en tronçons, et balises de bord.
+static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
+	var root := Node3D.new()
+	root.name = "Route"
 	var mat := ShaderMaterial.new()
 	mat.shader = ROAD_SHADER
-	var mi := MeshInstance3D.new()
-	mi.name = "Route"
-	mi.mesh = st.commit()
-	mi.material_override = mat
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	return mi
+	for mesh: Mesh in ride.road_meshes(base_elev):
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.material_override = mat
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		root.add_child(mi)
+	var posts: PackedFloat32Array = ride.road_posts(base_elev)
+	if not posts.is_empty():
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = Vegetation.post()
+		mm.instance_count = posts.size() / 16
+		mm.buffer = posts
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if quality == 0 else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		root.add_child(mmi)
+	return root
 
 
 static func _trees(ride: Object, base_elev: float) -> Node3D:
@@ -159,33 +153,11 @@ static func _trees(ride: Object, base_elev: float) -> Node3D:
 			var y: float = ride.ground_height(x, z) - base_elev
 			var s := rng.randf_range(0.7, 1.4)
 			spots.append(Transform3D(Basis().scaled(Vector3(s, s * rng.randf_range(0.8, 1.3), s)), Vector3(x, y, z)))
-	root.add_child(_multimesh(_cone(Color(0.12, 0.30, 0.12), 2.4, 7.0, 4.5), spots))
-	root.add_child(_multimesh(_cone(Color(0.33, 0.22, 0.12), 0.25, 2.2, 1.1), spots))
+	var scaled: Array[Transform3D] = []
+	for t in spots:
+		scaled.append(Transform3D(t.basis.scaled(Vector3(4.6, 11.0, 4.6)), t.origin))
+	root.add_child(_multimesh(Vegetation.conifer(), scaled))
 	return root
-
-
-static func _cone(color: Color, radius: float, height: float, lift: float) -> Mesh:
-	var mesh := CylinderMesh.new()
-	mesh.top_radius = 0.0 if radius > 1.0 else radius
-	mesh.bottom_radius = radius
-	mesh.height = height
-	mesh.radial_segments = 8
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 1.0
-	mesh.material = mat
-	# Décale le maillage pour que sa base repose au sol.
-	var st := SurfaceTool.new()
-	st.create_from(mesh, 0)
-	var arrays := st.commit_to_arrays()
-	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	for v in verts.size():
-		verts[v].y += lift
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	var out := ArrayMesh.new()
-	out.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	out.surface_set_material(0, mat)
-	return out
 
 
 static func _multimesh(mesh: Mesh, spots: Array[Transform3D]) -> MultiMeshInstance3D:

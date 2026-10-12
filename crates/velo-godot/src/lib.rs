@@ -21,6 +21,7 @@ use velo_core::route::Route;
 use velo_core::sim::{AutoShift, RiderModel, SimSettings, SimulatedDevices};
 use velo_core::terrain::Terrain;
 use velo_world::mesh::MeshData;
+use velo_world::road::RoadPath;
 use velo_world::world::Texture;
 use velo_world::{Streamer, World, WorldOptions};
 
@@ -46,6 +47,8 @@ pub struct VeloRide {
     profile: Profile,
     route: Option<Route>,
     terrain: Option<Terrain>,
+    /// Tracé lissé de la route et trajectoire du cycliste.
+    path: Option<RoadPath>,
     ride: Option<Ride>,
     devices: Option<SimulatedDevices>,
     running: bool,
@@ -65,6 +68,7 @@ impl INode for VeloRide {
             profile,
             route: None,
             terrain: None,
+            path: None,
             ride: None,
             devices: None,
             running: false,
@@ -137,6 +141,48 @@ fn array_mesh(m: &MeshData) -> Option<Gd<ArrayMesh>> {
     Some(mesh)
 }
 
+/// Côté des cellules d'arbres (m) : chaque cellule choisit son niveau de
+/// détail selon sa distance à la caméra.
+const TREE_CELL_M: f32 = 128.0;
+
+/// Répartit les arbres d'un carré de 512 m en cellules de 128 m : `center`
+/// (relatif au carré) et tampons MultiMesh recentrés sur la cellule.
+fn tree_cells(
+    conifers: &velo_world::mesh::Instances,
+    broadleaves: &velo_world::mesh::Instances,
+) -> VarArray {
+    use std::collections::BTreeMap;
+    const STRIDE: usize = velo_world::mesh::Instances::STRIDE;
+    let mut cells: BTreeMap<(i32, i32), [Vec<f32>; 2]> = BTreeMap::new();
+    for (kind, inst) in [conifers, broadleaves].into_iter().enumerate() {
+        for one in inst.buffer.chunks_exact(STRIDE) {
+            let key = (
+                (one[3] / TREE_CELL_M).floor() as i32,
+                (one[11] / TREE_CELL_M).floor() as i32,
+            );
+            cells.entry(key).or_default()[kind].extend_from_slice(one);
+        }
+    }
+    let mut out = VarArray::new();
+    for ((kx, kz), mut bufs) in cells {
+        let (cx, cz) = (
+            (kx as f32 + 0.5) * TREE_CELL_M,
+            (kz as f32 + 0.5) * TREE_CELL_M,
+        );
+        let mut d = VarDictionary::new();
+        d.set("center", Vector3::new(cx, 0.0, cz));
+        for (key, buf) in ["conifers", "broadleaves"].into_iter().zip(bufs.iter_mut()) {
+            for one in buf.chunks_exact_mut(STRIDE) {
+                one[3] -= cx;
+                one[11] -= cz;
+            }
+            d.set(key, &PackedFloat32Array::from(buf.as_slice()).to_variant());
+        }
+        out.push(&d.to_variant());
+    }
+    out
+}
+
 /// Texture GPU avec mipmaps déjà calculés par velo-world.
 fn texture(t: &Texture) -> Option<Gd<ImageTexture>> {
     if t.size == 0 {
@@ -176,6 +222,7 @@ impl VeloRide {
             Ok(route) => {
                 self.drop_world();
                 self.terrain = Some(Terrain::new(&route));
+                self.path = Some(RoadPath::new(&route));
                 self.route = Some(route);
                 self.ride = None;
                 self.running = false;
@@ -287,6 +334,7 @@ impl VeloRide {
                 Ok(Ok(world)) => {
                     // Le parcours suit désormais l'altitude du relief.
                     self.terrain = Some(Terrain::new(&world.route));
+                    self.path = Some(world.path.clone());
                     self.route = Some(world.route.clone());
                     let threads = std::thread::available_parallelism()
                         .map_or(2, |n| n.get().saturating_sub(2))
@@ -365,7 +413,35 @@ impl VeloRide {
         if let Some(t) = texture(&c.texture) {
             d.set("texture", &t.to_variant());
         }
+        if let Some(m) = array_mesh(&c.buildings) {
+            d.set("buildings", &m.to_variant());
+        }
         d
+    }
+
+    /// Chaussée et accotements en tronçons de ~200 m (coordonnées Godot,
+    /// altitude relative à `base`).
+    #[func]
+    fn road_meshes(&self, base: f64) -> VarArray {
+        let mut out = VarArray::new();
+        if let Some(p) = &self.path {
+            for m in p.meshes(base, 200.0) {
+                if let Some(mesh) = array_mesh(&m) {
+                    out.push(&mesh.to_variant());
+                }
+            }
+        }
+        out
+    }
+
+    /// Balises de bord de route (tampon MultiMesh), tous les 50 m.
+    #[func]
+    fn road_posts(&self, base: f64) -> PackedFloat32Array {
+        self.path
+            .as_ref()
+            .map_or_else(PackedFloat32Array::new, |p| {
+                PackedFloat32Array::from(p.posts(base, 50.0).buffer.as_slice())
+            })
     }
 
     /// Centres (Godot) des carrés détaillés, dans l'ordre de leurs indices.
@@ -419,12 +495,12 @@ impl VeloRide {
                 d.set("texture", &t.to_variant());
             }
             d.set(
-                "conifers",
-                &PackedFloat32Array::from(detail.conifers.buffer.as_slice()).to_variant(),
+                "tree_cells",
+                &tree_cells(&detail.conifers, &detail.broadleaves).to_variant(),
             );
             d.set(
-                "broadleaves",
-                &PackedFloat32Array::from(detail.broadleaves.buffer.as_slice()).to_variant(),
+                "bushes",
+                &PackedFloat32Array::from(detail.bushes.buffer.as_slice()).to_variant(),
             );
             out.push(&d.to_variant());
         }
@@ -600,6 +676,7 @@ impl VeloRide {
         let here = ride.route.point_at(t.distance_m);
         let ahead = ride.route.point_at(t.distance_m + 4.0);
         let behind = ride.route.point_at(t.distance_m - 4.0);
+        let slope = (ahead.elevation_m - behind.elevation_m) / 8.0;
         let gears = ride.gearbox.gears().len() as i64;
         d.set("elapsed_s", t.elapsed_s);
         d.set("distance_m", t.distance_m);
@@ -621,15 +698,29 @@ impl VeloRide {
         d.set("gear_index", t.gear_index as i64);
         d.set("gear_count", gears);
         d.set("rider_kg", self.profile.rider.weight_kg);
-        d.set("position", v3(here.x, here.elevation_m, -here.y));
-        d.set(
-            "direction",
-            v3(
-                ahead.x - behind.x,
-                ahead.elevation_m - behind.elevation_m,
-                -(ahead.y - behind.y),
-            ),
-        );
+        match &self.path {
+            // Sur sa trajectoire : à droite, à la corde quand ça ne monte pas.
+            Some(p) => {
+                let pose = p.rider_at(t.distance_m);
+                d.set("position", v3(pose.x, pose.elevation, -pose.n));
+                d.set("direction", v3(pose.heading.0, slope, -pose.heading.1));
+                // Inclinaison d'équilibre en virage : tan(φ) = v² κ / g.
+                let lean = (t.speed_ms * t.speed_ms * pose.curvature / 9.81).atan();
+                d.set("lean", lean.clamp(-0.7, 0.7));
+            }
+            None => {
+                d.set("position", v3(here.x, here.elevation_m, -here.y));
+                d.set(
+                    "direction",
+                    v3(
+                        ahead.x - behind.x,
+                        ahead.elevation_m - behind.elevation_m,
+                        -(ahead.y - behind.y),
+                    ),
+                );
+                d.set("lean", 0.0);
+            }
+        }
         d.set("finished", t.finished);
         d
     }
