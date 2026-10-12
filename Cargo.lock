@@ -1610,6 +1610,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "velo-ble"
+version = "0.1.0"
+dependencies = [
+ "btleplug",
+ "futures",
+ "tokio",
+ "uuid",
+ "velo-core",
+]
+
+[[package]]
 name = "velo-core"
 version = "0.1.0"
 dependencies = [
