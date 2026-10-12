@@ -51,13 +51,17 @@ Au menu, **Décor réel** télécharge une fois, puis garde en cache (`~/.cache/
 
 La route suit un tracé lissé, rééchantillonné tous les mètres : enrobé avec grain, rustines, traces de roues et marquages usés, accotements en gravier puis en herbe, buissons sur les bords et balises J6 tous les 50 m. Le relief est aplani sous la chaussée puis rejoint le terrain sur une trentaine de mètres, il ne la coupe plus. Le cycliste tient sa droite en montée et coupe les virages à la corde sur le plat et en descente, en s'inclinant selon la vitesse.
 
+![Rond-point et routes adjacentes d'après OpenStreetMap](docs/captures/rond-point.jpg)
+
+Avec OpenStreetMap, la route devient celle de la réalité : le tracé du GPX est recalé sur la route OSM, la largeur et le nombre de voies viennent des étiquettes `width` et `lanes` (sinon du type de route), avec axe discontinu, continu dans les lacets, et séparations de voies. Les trottoirs viennent de `sidewalk` ; quand OSM ne dit rien, une rue bordée de façades en reçoit un. Les routes qui débouchent sur le parcours ont une amorce de 30 m évasée au carrefour, avec ligne « cédez le passage » et rive discontinue sur la route principale ; au-delà, elles continuent drapées sur le relief avec le même enrobé (ou en piste de terre). Les ronds-points (`junction=roundabout`, ou anneaux circulaires) sont dessinés en entier avec leur îlot central fleuri. L'exemple « Rond-point du Bourg-d'Oisans » en traverse un.
+
 Près du parcours, des sapins et des feuillus poussent là où OSM indique une forêt ou là où l'image aérienne est vert sombre (version détaillée de près, simplifiée au-delà) ; les bâtiments sont extrudés à leur hauteur avec des fenêtres et restent visibles au loin, les routes et rivières sont drapées sur le relief, les lacs posés à plat. Près de la route, l'herbe des accotements et un grain de détail sur le sol masquent le flou des images aériennes.
 
 **Qualité** basse, moyenne ou haute : distance du décor, finesse des images (2 m, 1 m ou 0,5 m par pixel), densité et portée des arbres, ombres, anticrénelage et échelle de rendu (FSR). L'affichage est plafonné à 60 images/s. Les carrés de décor détaillés (512 m) sont générés en arrière-plan autour du cycliste et libérés derrière lui ; au loin, des carrés de 2 km peu détaillés. Sur une Intel HD 630, commence en qualité moyenne.
 
 Options en ligne de commande : `--decor reel|cache|simple`, `--qualite 0|1|2`, `--osm-fichier data/osm-alpe-d-huez.json` (OSM depuis un fichier au lieu d'Overpass), `--images <url {z}/{x}/{y}>` (autre source d'images, `file://` accepté), `--aller-a <m>`.
 
-Sans Godot : `cargo run --release -p velo-world --example decor -- data/alpe-d-huez.gpx --osm data/osm-alpe-d-huez.json` construit le décor et affiche ce qui a été trouvé.
+Sans Godot : `cargo run --release -p velo-world --example decor -- data/alpe-d-huez.gpx --osm data/osm-alpe-d-huez.json` construit le décor et affiche ce qui a été trouvé. Ce fichier OSM d'essai vient d'Overture Maps : il a la géométrie des routes OSM mais pas leurs étiquettes de voies, de trottoirs ni de ronds-points, qui y sont donc déduites ; avec Overpass, ce sont les vraies.
 
 ## Essayer le cœur en ligne de commande
 

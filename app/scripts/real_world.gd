@@ -5,6 +5,7 @@ extends Node3D
 
 const TERRAIN_SHADER := preload("res://shaders/terrain.gdshader")
 const BUILDING_SHADER := preload("res://shaders/buildings.gdshader")
+const ROAD_SHADER := preload("res://shaders/road.gdshader")
 const Vegetation := preload("res://scripts/vegetation.gd")
 ## Distance de chargement des carrés détaillés selon la qualité.
 const LOAD_RADIUS := [900.0, 1200.0, 1600.0]
@@ -33,7 +34,7 @@ var _near_size := 512.0
 var _building_mat: ShaderMaterial
 var _far_building_mat: ShaderMaterial
 var _detail: NoiseTexture2D
-var _road_mat: StandardMaterial3D
+var _road_mat: ShaderMaterial
 var _water_mat: StandardMaterial3D
 
 
@@ -43,7 +44,8 @@ func setup(p_ride: Object, p_quality: int) -> void:
 	_detail = _detail_texture()
 	_building_mat = ShaderMaterial.new()
 	_building_mat.shader = BUILDING_SHADER
-	_road_mat = _vertex_color_material(0.95)
+	_road_mat = ShaderMaterial.new()
+	_road_mat.shader = ROAD_SHADER
 	_water_mat = _vertex_color_material(0.08)
 	_water_mat.metallic = 0.2
 	_near_centers = ride.world_near_centers()

@@ -1,10 +1,11 @@
 //! Décor réel autour d'un parcours : relief (tuiles terrarium), images
-//! aériennes (IGN par défaut) et OpenStreetMap (forêts, eau, bâtiments, routes).
+//! aériennes (IGN par défaut) et OpenStreetMap (forêts, eau, bâtiments, routes),
+//! et la route elle-même d'après OSM (voies, trottoirs, carrefours, ronds-points).
 //!
 //! Le décor est découpé en deux niveaux :
 //! - les « grands carrés » de 2 048 m, peu détaillés, construits au chargement ;
 //! - les « carrés proches » de 512 m le long du parcours, détaillés (relief à
-//!   8 m, image fine, arbres, bâtiments), générés à la demande autour de la
+//!   4 m, image fine, arbres, bâtiments), générés à la demande autour de la
 //!   caméra par des fils de travail et libérés quand on s'éloigne.
 
 pub mod elevation;
@@ -13,6 +14,7 @@ pub mod mesh;
 pub mod osm;
 pub mod raster;
 pub mod road;
+pub mod roadnet;
 pub mod stream;
 pub mod tiles;
 pub mod world;

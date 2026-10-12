@@ -22,6 +22,7 @@ const EXAMPLES := {
 	"Alpe d'Huez depuis Le Bourg-d'Oisans (14 km)": "res://../data/alpe-d-huez.gpx",
 	"Vallée puis lacets (7,5 km)": "res://../data/exemple-lacets.gpx",
 	"Plat puis col à 7 % (8 km)": "res://../data/exemple-col.gpx",
+	"Rond-point du Bourg-d'Oisans (0,7 km)": "res://../data/exemple-rond-point.gpx",
 }
 const DECORS := ["reel", "cache", "simple"]
 const QUALITY_NAMES := ["Basse", "Moyenne", "Haute"]

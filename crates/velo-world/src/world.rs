@@ -2,10 +2,11 @@
 
 use crate::elevation::{smooth_profile, Dem};
 use crate::geo::{mercator_px_x, mercator_px_y, meters_per_px, zoom_for, LocalProjection};
-use crate::mesh::{building, flat_polygon, ribbon, terrain_grid, Instances, MeshData};
+use crate::mesh::{building, flat_polygon, ribbon, road_ribbon, terrain_grid, Instances, MeshData};
 use crate::osm::{Cover, LineKind, OsmData};
 use crate::raster::{cover_grid, ground_color, looks_like_trees, noise, rand01};
-use crate::road::{RoadPath, HALF_WIDTH, VERGE};
+use crate::road::{marks, RoadPath};
+use crate::roadnet::{self, RoadNetwork};
 use crate::tiles::{TileCache, TileSource};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -13,7 +14,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use velo_core::config::Scenery;
 use velo_core::route::Route;
-use velo_core::terrain::Terrain;
 
 /// Côté d'un carré proche (détaillé).
 pub const NEAR_SIZE: f64 = 512.0;
@@ -21,10 +21,6 @@ pub const NEAR_SIZE: f64 = 512.0;
 pub const FAR_SIZE: f64 = 2048.0;
 /// Zoom des tuiles d'altitude (≈ 13 m par pixel dans les Alpes).
 const DEM_ZOOM: u8 = 13;
-/// Distance à l'axe en deçà de laquelle le sol rejoint la chaussée.
-const ROAD_BLEND_M: f64 = 28.0;
-/// Plateforme plane sous la chaussée et les accotements (demi-largeur, m).
-const ROAD_FLAT_M: f64 = HALF_WIDTH + VERGE + 0.7;
 /// Pas du parcours (m), identique à celui de velo-godot.
 const ROUTE_STEP_M: f64 = 5.0;
 
@@ -155,8 +151,10 @@ pub struct World {
     pub proj: LocalProjection,
     /// Parcours avec l'altitude du relief si demandé.
     pub route: Route,
-    /// Tracé lissé de la route, tous les mètres.
+    /// Tracé lissé de la route, tous les mètres, recalé sur OSM.
     pub path: RoadPath,
+    /// Amorces des routes adjacentes, ronds-points, relief aplani.
+    pub net: RoadNetwork,
     /// OpenStreetMap a-t-il fourni des données ?
     pub osm_ok: bool,
     pub quality: Quality,
@@ -167,7 +165,6 @@ pub struct World {
     /// Résumé lisible de ce qui a été trouvé (relief, images, OSM).
     pub summary: String,
     dem: Dem,
-    index: Terrain,
     osm: OsmData,
     cache: TileCache,
     imagery: TileSource,
@@ -240,8 +237,6 @@ impl World {
         let fallback_elevation =
             route.points.iter().map(|p| p.elevation_m).sum::<f64>() / route.points.len() as f64;
         let base_elevation = route.points[0].elevation_m;
-        let path = RoadPath::new(&route);
-        let index = Terrain::from_points(path.axis_points(2));
 
         // 3. OpenStreetMap.
         progress(0.27, "OpenStreetMap : forêts, eau, bâtiments, routes…");
@@ -257,6 +252,14 @@ impl World {
             return Err("annulé".into());
         }
 
+        // 4. La route d'après OSM : tracé recalé, voies, trottoirs, carrefours.
+        progress(0.33, "Route : voies, trottoirs, carrefours…");
+        let dem_at = |x: f64, n: f64| {
+            let (lat, lon) = proj.to_lat_lon(x, n);
+            dem.sample(lat, lon).unwrap_or(fallback_elevation)
+        };
+        let (path, net) = roadnet::build(&route, &osm, &dem_at);
+
         let imagery = TileSource::new(&source_name("images", &opts.imagery_url), &opts.imagery_url);
         let near_zoom = zoom_for(lat, NEAR_SIZE / quality.near_px as f64 * 1.15, 19);
         let far_zoom = zoom_for(lat, FAR_SIZE / quality.far_px as f64 * 1.15, 19);
@@ -265,6 +268,7 @@ impl World {
             proj,
             route,
             path,
+            net,
             osm_ok: !osm.is_empty(),
             quality,
             base_elevation,
@@ -273,7 +277,6 @@ impl World {
             credits: String::new(),
             summary: String::new(),
             dem,
-            index,
             osm,
             cache,
             imagery,
@@ -286,7 +289,7 @@ impl World {
             .map(|center| NearChunk { center })
             .collect();
 
-        // 4. Grands carrés lointains, en parallèle.
+        // 5. Grands carrés lointains, en parallèle.
         let centers = chunk_centers(&world.route, FAR_SIZE, quality.far_margin_m);
         let next = AtomicUsize::new(0);
         let done = AtomicUsize::new(0);
@@ -326,11 +329,21 @@ impl World {
             .sum::<f32>()
             / world.far.len().max(1) as f32;
         world.credits = credits(opts, share > 0.0, !world.osm.is_empty());
+        let town = world
+            .path
+            .samples
+            .iter()
+            .filter(|p| p.profile.sidewalk.iter().any(|&w| w > 0.1))
+            .count() as f64
+            / world.path.samples.len().max(1) as f64;
         world.summary = format!(
-            "relief {} tuiles · images aériennes {} % · {} · {} grands carrés, {} carrés détaillés",
+            "relief {} tuiles · images aériennes {} % · {} · route : {} amorces, {} ronds-points, trottoirs sur {} % · {} grands carrés, {} carrés détaillés",
             world.dem.tile_count(),
             (share * 100.0).round(),
             osm_note,
+            world.net.stubs.len(),
+            world.net.roundabouts.len(),
+            (town * 100.0).round(),
             world.far.len(),
             world.near.len()
         );
@@ -344,21 +357,26 @@ impl World {
         self.dem.sample(lat, lon).unwrap_or(self.fallback_elevation)
     }
 
-    /// Altitude du sol : le relief, aplani sous la chaussée près du parcours.
+    /// Altitude du sol : le relief, aplani sous les chaussées (parcours,
+    /// amorces, ronds-points).
     pub fn ground(&self, x: f64, n: f64) -> f64 {
-        let dem = self.dem_height(x, n);
-        match self.index.nearest(x, n, ROAD_BLEND_M) {
-            Some((d, road)) => {
-                let w = 1.0 - smoothstep(ROAD_FLAT_M, ROAD_BLEND_M, d);
-                dem + (road - 0.35 - dem) * w
-            }
-            None => dem,
-        }
+        self.net.flat.apply(self.dem_height(x, n), x, n)
     }
 
-    /// Distance horizontale au parcours, plafonnée à `max_m`.
+    /// Distance horizontale à l'axe du parcours, plafonnée à `max_m`.
     pub fn distance_to_route(&self, x: f64, n: f64, max_m: f64) -> f64 {
-        self.index.nearest(x, n, max_m).map_or(max_m, |(d, _)| d)
+        self.net
+            .samples
+            .nearest(x, n, max_m)
+            .map_or(max_m, |(d, _)| d)
+    }
+
+    /// Distance à l'axe et profil de la chaussée la plus proche du parcours.
+    fn route_near(&self, x: f64, n: f64, max_m: f64) -> Option<(f64, &crate::road::Profile)> {
+        self.net
+            .samples
+            .nearest(x, n, max_m)
+            .map(|(d, k)| (d, &self.path.samples[k].profile))
     }
 
     fn far_chunk(&self, center: (f64, f64)) -> FarChunk {
@@ -431,10 +449,12 @@ impl World {
                     if x < x0 || x >= x1 || n < n0 || n >= n1 {
                         continue;
                     }
-                    let Some((d, _)) = self.index.nearest(x, n, q.tree_radius_m) else {
+                    let Some((d, pr)) = self.route_near(x, n, q.tree_radius_m) else {
                         continue;
                     };
-                    if d < 8.0 {
+                    if d < (pr.reach(0).max(pr.reach(1)) + 2.5).max(8.0)
+                        || self.net.flat.near_other(x, n, 2.5)
+                    {
                         continue;
                     }
                     let cover = Cover::from_u8(covers.at(x, n).unwrap_or(0));
@@ -504,7 +524,8 @@ impl World {
         detail.bushes = self.bushes_in((cx, cn), half, &covers, &image_px);
         let inside = |p: (f64, f64)| (p.0 - cx).abs() <= half && (p.1 - cn).abs() <= half;
 
-        // Routes et rivières drapées sur le sol, plans d'eau.
+        // Routes (même chaussée que le parcours, sans accotement) et rivières
+        // drapées sur le sol, plans d'eau.
         let (min, max) = ((cx - half, cn - half), (cx + half, cn + half));
         for l in self
             .osm
@@ -512,26 +533,50 @@ impl World {
             .iter()
             .filter(|l| l.bbox.intersects(min, max))
         {
-            let (mesh, lift, color, keep_off_route) = match l.kind {
-                LineKind::Road { paved, major } => (
-                    &mut detail.roads,
-                    if major { 0.14 } else { 0.11 },
-                    if paved {
-                        [0.27, 0.27, 0.28, 1.0]
-                    } else {
-                        [0.50, 0.44, 0.36, 1.0]
-                    },
-                    true,
-                ),
-                LineKind::Waterway => (&mut detail.water, 0.2, [0.15, 0.27, 0.33, 1.0], false),
+            let (width, lanes, marks, lift) = match l.kind {
+                LineKind::Road { paved, major } => {
+                    let (w, lanes) = roadnet::carriageway(l);
+                    let centre = paved && !l.info.oneway && lanes >= 2 && l.info.rank >= 3;
+                    (
+                        w,
+                        if paved { f32::from(lanes) } else { 0.0 },
+                        if centre { marks::CENTRE_DASH } else { 0 },
+                        if major { 0.14 } else { 0.11 },
+                    )
+                }
+                LineKind::Waterway => (l.width_m, -1.0, 0, 0.2),
                 LineKind::Path => continue,
             };
-            let clear = 3.5 + l.width_m / 2.0;
-            for run in runs_inside(&l.points, 6.0, &inside, &|p: (f64, f64)| {
-                !keep_off_route || self.distance_to_route(p.0, p.1, clear) >= clear
-            }) {
+            let is_road = lanes >= 0.0;
+            // Loin du parcours seulement : les amorces passent par-dessus.
+            let clear = |p: (f64, f64)| {
+                !is_road
+                    || self
+                        .route_near(p.0, p.1, 20.0)
+                        .map_or(true, |(d, pr)| d >= pr.half_width + 0.5 + width / 2.0)
+            };
+            for run in runs_inside(&l.points, 6.0, &inside, &clear) {
                 let rel: Vec<(f64, f64)> = run.iter().map(|&(x, n)| (x - cx, -(n - cn))).collect();
-                ribbon(mesh, &rel, l.width_m, lift, &rel_ground, color);
+                if is_road {
+                    road_ribbon(
+                        &mut detail.roads,
+                        &rel,
+                        width,
+                        lift,
+                        &rel_ground,
+                        lanes,
+                        marks,
+                    );
+                } else {
+                    ribbon(
+                        &mut detail.water,
+                        &rel,
+                        width,
+                        lift,
+                        &rel_ground,
+                        [0.15, 0.27, 0.33, 1.0],
+                    );
+                }
             }
         }
         for a in &self.osm.areas {
@@ -583,7 +628,10 @@ impl World {
                 continue;
             }
             // Emprise mal placée sur la chaussée : on l'ignore.
-            if self.distance_to_route(c.0, c.1, ROAD_FLAT_M) < HALF_WIDTH + 1.0 {
+            if self
+                .route_near(c.0, c.1, 20.0)
+                .is_some_and(|(d, pr)| d < pr.half_width + 1.0)
+            {
                 continue;
             }
             let heights: Vec<f64> = b.ring.iter().map(|&(x, n)| self.ground(x, n)).collect();
@@ -616,13 +664,19 @@ impl World {
         let (cx, cn) = center;
         let base = self.base_elevation;
         let mut out = Instances::default();
-        let edge = HALF_WIDTH + VERGE;
         for (k, p) in self.path.samples.iter().enumerate() {
             if (p.x - cx).abs() > half + 8.0 || (p.n - cn).abs() > half + 8.0 {
                 continue;
             }
             let (rx, rn) = p.right();
+            let pr = &p.profile;
             for (side, sign) in [(0i64, -1.0), (1, 1.0)] {
+                // Ni en ville (trottoir), ni au débouché d'une route.
+                let gap = [marks::GAP_LEFT, marks::GAP_RIGHT][side as usize];
+                if pr.hidden || pr.sidewalk[side as usize] > 0.1 || pr.marks & gap != 0 {
+                    continue;
+                }
+                let edge = pr.reach(side as usize);
                 let key = k as i64 * 2 + side;
                 let r = |c: i64| rand01(key, 77, c);
                 let off = sign * (edge + 0.5 + r(1) * 2.8);
@@ -632,8 +686,11 @@ impl World {
                 if (x - cx).abs() > half || (n - cn).abs() > half {
                     continue;
                 }
-                // Une autre partie du parcours (lacet) passe tout près : pas de buisson.
-                if self.distance_to_route(x, n, edge + 0.4) < edge + 0.3 {
+                // Une autre partie du parcours (lacet) ou une amorce passe tout
+                // près : pas de buisson.
+                if self.distance_to_route(x, n, edge + 0.4) < edge + 0.3
+                    || self.net.flat.near_other(x, n, 1.0)
+                {
                     continue;
                 }
                 let cover = Cover::from_u8(covers.at(x, n).unwrap_or(0));
@@ -698,8 +755,17 @@ impl World {
                     continue;
                 }
                 let (x, n) = (x0 + (i as f64 + 0.5) * px, n1 - (j as f64 + 0.5) * px);
-                let d = self.distance_to_route(x, n, reach);
-                let w = 1.0 - smoothstep(ROAD_FLAT_M, reach, d);
+                let Some((d, k)) = self.net.samples.nearest(x, n, reach) else {
+                    continue;
+                };
+                let p = &self.path.samples[k];
+                let (rx, rn) = p.right();
+                let side = usize::from((x - p.x) * rx + (n - p.n) * rn > 0.0);
+                // En ville, l'image (façades, cours) reste telle quelle.
+                if p.profile.sidewalk[side] > 0.1 {
+                    continue;
+                }
+                let w = 1.0 - smoothstep(p.profile.reach(side) + 0.7, reach, d);
                 if w <= 0.0 {
                     continue;
                 }

@@ -92,6 +92,26 @@ pub struct Line {
     pub width_m: f64,
     pub points: Vec<(f64, f64)>,
     pub bbox: BBox,
+    pub info: WayInfo,
+}
+
+/// Ce que les étiquettes OSM disent de la chaussée d'une route.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WayInfo {
+    /// Importance : 6 autoroute, 5 nationale, 4 secondaire, 3 tertiaire,
+    /// 2 non classée, 1 résidentielle, 0 desserte, chemin ou sentier.
+    pub rank: u8,
+    /// Nombre de voies (`lanes`), s'il est renseigné.
+    pub lanes: Option<u8>,
+    /// Largeur renseignée (`width`) plutôt que supposée.
+    pub width_tagged: bool,
+    /// Trottoirs à gauche et à droite dans le sens des points (`sidewalk*`),
+    /// `None` quand OSM ne dit rien.
+    pub sidewalk: [Option<bool>; 2],
+    pub oneway: bool,
+    pub roundabout: bool,
+    /// Trottoir dessiné comme un chemin à part (`footway=sidewalk`).
+    pub is_sidewalk: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -207,12 +227,19 @@ impl OsmData {
             return;
         }
         if let Some((kind, width)) = line_kind(tags) {
+            let mut pts = pts;
+            let info = way_info(tags);
+            // Sens unique à contresens des points : on retourne le tracé.
+            if tag(tags, "oneway") == Some("-1") {
+                pts.reverse();
+            }
             let bbox = BBox::of(pts.iter().copied());
             self.lines.push(Line {
                 kind,
                 width_m: width,
                 points: pts,
                 bbox,
+                info,
             });
             return;
         }
@@ -313,7 +340,7 @@ fn relation_rings(el: &Value, proj: &LocalProjection) -> (Vec<Ring>, Vec<Ring>) 
     (join_rings(outer), join_rings(inner))
 }
 
-fn join_rings(mut parts: Vec<Vec<(f64, f64)>>) -> Vec<Ring> {
+pub(crate) fn join_rings(mut parts: Vec<Vec<(f64, f64)>>) -> Vec<Ring> {
     let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 0.05 && (a.1 - b.1).abs() < 0.05;
     let mut rings = Vec::new();
     while let Some(mut cur) = parts.pop() {
@@ -436,6 +463,63 @@ fn line_kind(tags: &Value) -> Option<(LineKind, f64)> {
     Some((LineKind::Waterway, w))
 }
 
+fn way_info(tags: &Value) -> WayInfo {
+    let h = tag(tags, "highway").unwrap_or("");
+    let rank = match h.trim_end_matches("_link") {
+        "motorway" | "trunk" => 6,
+        "primary" => 5,
+        "secondary" => 4,
+        "tertiary" => 3,
+        "unclassified" | "road" => 2,
+        "residential" | "living_street" => 1,
+        _ => 0,
+    };
+    let yes = |v: Option<&str>| match v {
+        Some("yes" | "separate" | "both") => Some(true),
+        Some("no" | "none") => Some(false),
+        _ => None,
+    };
+    let mut sidewalk = match tag(tags, "sidewalk") {
+        Some("both" | "yes" | "separate") => [Some(true), Some(true)],
+        Some("left") => [Some(true), Some(false)],
+        Some("right") => [Some(false), Some(true)],
+        Some("no" | "none") => [Some(false), Some(false)],
+        _ => [None, None],
+    };
+    if let Some(b) = yes(tag(tags, "sidewalk:both")) {
+        sidewalk = [Some(b), Some(b)];
+    }
+    for (k, key) in ["sidewalk:left", "sidewalk:right"].iter().enumerate() {
+        if let Some(b) = yes(tag(tags, key)) {
+            sidewalk[k] = Some(b);
+        }
+    }
+    let roundabout = matches!(tag(tags, "junction"), Some("roundabout" | "circular"));
+    let mut oneway = roundabout
+        || matches!(tag(tags, "oneway"), Some("yes" | "1" | "true" | "-1"))
+        || h == "motorway";
+    if tag(tags, "oneway") == Some("no") {
+        oneway = false;
+    }
+    // Sens unique retourné : la gauche des points devient la droite.
+    if tag(tags, "oneway") == Some("-1") {
+        sidewalk.swap(0, 1);
+    }
+    WayInfo {
+        rank,
+        lanes: tag(tags, "lanes")
+            .and_then(|s| s.trim().parse::<u8>().ok())
+            .filter(|n| (1..=8).contains(n)),
+        width_tagged: tag(tags, "width")
+            .and_then(parse_meters)
+            .is_some_and(|w| (1.0..30.0).contains(&w)),
+        sidewalk,
+        oneway,
+        roundabout,
+        is_sidewalk: tag(tags, "footway") == Some("sidewalk"),
+    }
+}
+
 fn parse_meters(s: &str) -> Option<f64> {
     s.trim()
         .trim_end_matches('m')
@@ -504,6 +588,35 @@ mod tests {
         // Les trois morceaux forment un seul anneau fermé.
         assert_eq!(lake.rings.len(), 1);
         assert_eq!(lake.rings[0].len(), 4);
+    }
+
+    #[test]
+    fn reads_lanes_sidewalks_and_roundabouts() {
+        let json = r#"{"elements":[
+          {"type":"way","id":1,"tags":{"highway":"secondary","lanes":"3","sidewalk":"left","width":"9.5"},
+           "geometry":[{"lat":45.0,"lon":6.0},{"lat":45.001,"lon":6.0}]},
+          {"type":"way","id":2,"tags":{"highway":"primary","junction":"roundabout"},
+           "geometry":[{"lat":45.0,"lon":6.0},{"lat":45.0002,"lon":6.0002},{"lat":45.0,"lon":6.0004},{"lat":45.0,"lon":6.0}]},
+          {"type":"way","id":3,"tags":{"highway":"residential","oneway":"-1","sidewalk:right":"yes"},
+           "geometry":[{"lat":45.0,"lon":6.0},{"lat":45.001,"lon":6.0}]},
+          {"type":"way","id":4,"tags":{"highway":"footway","footway":"sidewalk"},
+           "geometry":[{"lat":45.0,"lon":6.0},{"lat":45.001,"lon":6.0}]}
+        ]}"#;
+        let proj = LocalProjection::new(45.0, 6.0);
+        let d = OsmData::from_overpass_json(json, &proj).unwrap();
+        let a = d.lines[0].info;
+        assert_eq!((a.rank, a.lanes, a.width_tagged), (4, Some(3), true));
+        assert_eq!(a.sidewalk, [Some(true), Some(false)]);
+        assert!(!a.oneway);
+        assert_eq!(d.lines[0].width_m, 9.5);
+        let r = d.lines[1].info;
+        assert!(r.roundabout && r.oneway);
+        // Sens unique inversé : tracé retourné, trottoir passé à gauche.
+        let c = &d.lines[2];
+        assert!(c.info.oneway);
+        assert!(c.points[0].1 > c.points[1].1);
+        assert_eq!(c.info.sidewalk, [Some(true), None]);
+        assert!(d.lines[3].info.is_sidewalk);
     }
 
     #[test]
