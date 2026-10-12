@@ -1,8 +1,8 @@
 //! Sortie complète en mode test sur un GPX : home trainer, cadence, FC et
 //! Zwift Click simulés, sans aucun matériel.
 //!
-//! cargo run -p velo-core --example simulate -- parcours.gpx            # cadence 88 rpm, Click automatiques
-//! cargo run -p velo-core --example simulate -- parcours.gpx --power 200
+//! cargo run -p velo-core --example simulate -- data/exemple-col.gpx              # cadence 88 rpm, Click automatiques
+//! cargo run -p velo-core --example simulate -- data/exemple-col.gpx --power 200
 
 use std::fs::File;
 use velo_core::{
@@ -32,7 +32,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.auto_shift = None;
     }
 
-    let route = Route::from_gpx(File::open(path)?, 5.0, 40.0)?;
+    let file = File::open(path).map_err(|e| format!("impossible d'ouvrir « {path} » : {e}"))?;
+    let route = Route::from_gpx(file, 5.0, 40.0)?;
     println!(
         "{} : {:.1} km, D+ {:.0} m",
         route.name.as_deref().unwrap_or("parcours"),

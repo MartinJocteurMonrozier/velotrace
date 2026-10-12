@@ -20,6 +20,6 @@ Architecture et plan : [docs/architecture.md](docs/architecture.md).
 ```sh
 cargo test
 cargo run -p velo-core --example gears                     # rapports virtuels
-cargo run -p velo-core --example simulate -- sortie.gpx              # mode test, cadence 88 rpm et Click automatiques
-cargo run -p velo-core --example simulate -- sortie.gpx --power 200  # mode test à 200 W
+cargo run -p velo-core --example simulate -- data/exemple-col.gpx              # mode test, cadence 88 rpm et Click automatiques
+cargo run -p velo-core --example simulate -- data/exemple-col.gpx --power 200  # mode test à 200 W
 ```

@@ -2,6 +2,7 @@
 name = "velo-core"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 description = "Cœur de velotrace : rapports, physique, parcours GPX et protocoles BLE"
 license = "MIT"
 
