@@ -1,3 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/velo-core", "crates/velo-probe"]
+members = ["crates/velo-core", "crates/velo-probe", "crates/velo-godot"]
+
+# Le cœur est optimisé même en mode debug : Godot charge la version debug de
+# l'extension depuis l'éditeur, et la génération du relief doit rester rapide.
+[profile.dev.package.velo-core]
+opt-level = 3

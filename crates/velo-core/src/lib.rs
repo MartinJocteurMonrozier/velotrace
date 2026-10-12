@@ -8,6 +8,7 @@
 //! - [`protocol`] : encodage et décodage des trames BLE (FTMS, CSC, HRS).
 //! - [`devices`] : interface commune aux appareils réels ou simulés.
 //! - [`sim`] : mode test, avec home trainer et accessoires simulés.
+//! - [`terrain`] : relief provisoire autour du parcours.
 
 pub mod config;
 pub mod devices;
@@ -17,3 +18,4 @@ pub mod protocol;
 pub mod ride;
 pub mod route;
 pub mod sim;
+pub mod terrain;

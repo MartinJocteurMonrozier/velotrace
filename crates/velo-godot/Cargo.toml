@@ -1,0 +1,15 @@
+[package]
+name = "velo-godot"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+description = "Pont entre velo-core et Godot (GDExtension)"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+velo-core = { path = "../velo-core" }
+# api-4-5 : l'extension fonctionne avec Godot 4.5 et toutes les versions suivantes.
+godot = { version = "0.5", features = ["api-4-5"] }

@@ -15,7 +15,27 @@ Architecture et plan : [docs/architecture.md](docs/architecture.md).
 - l'encodage et le décodage des trames BLE FTMS, CSC et HRS ;
 - le **mode test**, qui simule le home trainer, le capteur de cadence, la FC et les Zwift Click.
 
-## Essayer
+## Prototype jouable (Godot, mode test)
+
+![En route vers les lacets](docs/captures/prototype-lacets.png)
+
+Il faut [Godot 4.5 ou plus récent](https://godotengine.org/download) et Rust 1.94 ou plus récent (`rustup update stable`).
+
+```sh
+cargo build -p velo-godot          # compile l'extension Rust chargée par Godot
+godot --path app                   # ou ouvrir app/project.godot dans l'éditeur Godot et appuyer sur F5
+```
+
+Au menu, choisis un parcours d'exemple ou ton propre GPX, puis le cycliste virtuel :
+
+- **Cadence 88 rpm, Click automatiques** : la puissance dépend du rapport et de la pente, le cycliste change de vitesse tout seul ;
+- **Puissance fixe 200 W** : ← et → ajustent la puissance.
+
+Pendant la sortie : ↑ et ↓ changent de vitesse (Click), A active ou coupe les Click automatiques, C change de caméra, Espace met en pause, Échap revient au menu.
+
+Pour démarrer directement sur un parcours : `godot --path app -- --gpx /chemin/vers/sortie.gpx [--puissance 220]`.
+
+## Essayer le cœur en ligne de commande
 
 ```sh
 cargo test

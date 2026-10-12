@@ -1,0 +1,21 @@
+; Projet Godot de velotrace. Ouvrir ce dossier avec Godot 4.5 ou plus récent.
+
+config_version=5
+
+[application]
+
+config/name="velotrace"
+config/description="Home trainer : roule sur ta trace GPX"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.5", "Forward Plus")
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=2
