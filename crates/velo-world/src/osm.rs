@@ -129,7 +129,7 @@ pub struct BBox {
 }
 
 impl BBox {
-    fn of(points: impl IntoIterator<Item = (f64, f64)>) -> Self {
+    pub(crate) fn of(points: impl IntoIterator<Item = (f64, f64)>) -> Self {
         let mut b = BBox {
             min: (f64::MAX, f64::MAX),
             max: (f64::MIN, f64::MIN),

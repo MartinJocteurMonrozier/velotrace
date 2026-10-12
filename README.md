@@ -53,7 +53,15 @@ La route suit un tracé lissé, rééchantillonné tous les mètres : enrobé av
 
 ![Rond-point et routes adjacentes d'après OpenStreetMap](docs/captures/rond-point.jpg)
 
-Avec OpenStreetMap, la route devient celle de la réalité : le tracé du GPX est recalé sur la route OSM, la largeur et le nombre de voies viennent des étiquettes `width` et `lanes` (sinon du type de route), avec axe discontinu, continu dans les lacets, et séparations de voies. Les trottoirs viennent de `sidewalk` ; quand OSM ne dit rien, une rue bordée de façades en reçoit un. Les routes qui débouchent sur le parcours ont une amorce de 30 m évasée au carrefour, avec ligne « cédez le passage » et rive discontinue sur la route principale ; au-delà, elles continuent drapées sur le relief avec le même enrobé (ou en piste de terre). Les ronds-points (`junction=roundabout`, ou anneaux circulaires) sont dessinés en entier avec leur îlot central fleuri. L'exemple « Rond-point du Bourg-d'Oisans » en traverse un.
+Avec OpenStreetMap, la route devient celle de la réalité : le tracé du GPX est recalé sur la route OSM, la largeur et le nombre de voies viennent des étiquettes `width` et `lanes` (sinon du type de route), avec axe discontinu, continu dans les lacets, et séparations de voies. Les trottoirs viennent de `sidewalk` ; quand OSM ne dit rien, une rue bordée de façades en reçoit un. Les routes qui débouchent sur le parcours partent de leur vrai nœud de jonction, sous la chaussée, avec la même pente qu'elle : amorce de 30 m évasée au carrefour (moins quand elle arrive en biais), ligne « cédez le passage » et rive discontinue sur la route principale ; au-delà, elles continuent drapées sur le relief avec le même enrobé (ou en piste de terre). Une route qui longe le parcours ou le croise sans s'y raccorder (pont, voie parallèle) reste dessinée telle quelle. Les ronds-points (`junction=roundabout`, ou anneaux presque circulaires) gardent leur vraie forme, souvent ovale, et leur pente ; le cycliste y tient sa droite. L'exemple « Rond-point du Bourg-d'Oisans » en traverse un.
+
+![Mur de soutènement dans la montée de l'Alpe d'Huez](docs/captures/mur-soutenement.jpg)
+
+Là où la montagne est raide au bord de la route, un mur de soutènement en moellons la retient (jusqu'à 4 m, avec une terrasse herbeuse au-dessus), ou, au-delà de 45°, la paroi est taillée dans le rocher ; au-dessus du vide, un parapet de 75 cm borde la chaussée.
+
+![Arche d'arrivée et barrières](docs/captures/arrivee.jpg)
+
+Comme sur les grands tours, une arche gonflable marque le départ, le pied et le sommet de chaque ascension (à pois, avec sa longueur, sa pente moyenne et l'altitude du sommet) et l'arrivée, avec des barrières à leurs abords. Une ascension compte à partir de 80 m de dénivelé à 3 % de moyenne.
 
 Près du parcours, des sapins et des feuillus poussent là où OSM indique une forêt ou là où l'image aérienne est vert sombre (version détaillée de près, simplifiée au-delà) ; les bâtiments sont extrudés à leur hauteur avec des fenêtres et restent visibles au loin, les routes et rivières sont drapées sur le relief, les lacs posés à plat. Près de la route, l'herbe des accotements et un grain de détail sur le sol masquent le flou des images aériennes.
 

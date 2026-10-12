@@ -444,6 +444,20 @@ impl VeloRide {
         out
     }
 
+    /// Murs de soutènement et parapets le long des talus raides du décor réel.
+    #[func]
+    fn road_walls(&self, base: f64) -> VarArray {
+        let mut out = VarArray::new();
+        if let Some(s) = &self.streamer {
+            for m in s.world().net.wall_meshes(base) {
+                if let Some(mesh) = array_mesh(&m) {
+                    out.push(&mesh.to_variant());
+                }
+            }
+        }
+        out
+    }
+
     /// Arbustes des îlots de ronds-points (tampon MultiMesh).
     #[func]
     fn road_bushes(&self, base: f64) -> PackedFloat32Array {
@@ -452,6 +466,46 @@ impl VeloRide {
             .map_or_else(PackedFloat32Array::new, |s| {
                 PackedFloat32Array::from(s.world().net.island_bushes(base).buffer.as_slice())
             })
+    }
+
+    /// Arches de course (départ, pied et sommet des ascensions, arrivée) :
+    /// position Godot (altitude absolue), cap (est, nord), distance de l'axe
+    /// aux piles, type (0 départ, 1 pied, 2 sommet, 3 arrivée) et textes.
+    #[func]
+    fn route_arches(&self) -> VarArray {
+        let mut out = VarArray::new();
+        let (Some(route), Some(path)) = (&self.route, &self.path) else {
+            return out;
+        };
+        for a in velo_world::race::arches(route, path) {
+            let mut d = VarDictionary::new();
+            d.set("position", v3(a.x, a.elevation, -a.n));
+            d.set(
+                "heading",
+                Vector2::new(a.heading.0 as f32, a.heading.1 as f32),
+            );
+            d.set("left", a.left);
+            d.set("right", a.right);
+            d.set("kind", a.kind as i64);
+            d.set("title", &GString::from(a.title.as_str()));
+            d.set("subtitle", &GString::from(a.subtitle.as_str()));
+            out.push(&d.to_variant());
+        }
+        out
+    }
+
+    /// Barrières le long de la route aux abords des arches (tampon MultiMesh).
+    #[func]
+    fn route_barriers(&self, base: f64) -> PackedFloat32Array {
+        let (Some(route), Some(path)) = (&self.route, &self.path) else {
+            return PackedFloat32Array::new();
+        };
+        let arches = velo_world::race::arches(route, path);
+        PackedFloat32Array::from(
+            velo_world::race::barriers(path, &arches, base)
+                .buffer
+                .as_slice(),
+        )
     }
 
     /// Balises de bord de route (tampon MultiMesh), tous les 50 m.

@@ -337,12 +337,13 @@ impl World {
             .count() as f64
             / world.path.samples.len().max(1) as f64;
         world.summary = format!(
-            "relief {} tuiles · images aériennes {} % · {} · route : {} amorces, {} ronds-points, trottoirs sur {} % · {} grands carrés, {} carrés détaillés",
+            "relief {} tuiles · images aériennes {} % · {} · route : {} amorces, {} ronds-points, {} murs, trottoirs sur {} % · {} grands carrés, {} carrés détaillés",
             world.dem.tile_count(),
             (share * 100.0).round(),
             osm_note,
             world.net.stubs.len(),
             world.net.roundabouts.len(),
+            world.net.walls.len(),
             (town * 100.0).round(),
             world.far.len(),
             world.near.len()
@@ -524,59 +525,52 @@ impl World {
         detail.bushes = self.bushes_in((cx, cn), half, &covers, &image_px);
         let inside = |p: (f64, f64)| (p.0 - cx).abs() <= half && (p.1 - cn).abs() <= half;
 
-        // Routes (même chaussée que le parcours, sans accotement) et rivières
-        // drapées sur le sol, plans d'eau.
+        // Routes (même chaussée que le parcours, sans accotement) drapées sur
+        // le sol, hors du parcours et des amorces qui les prolongent ;
+        // rivières et plans d'eau.
         let (min, max) = ((cx - half, cn - half), (cx + half, cn + half));
+        let everywhere = |_: (f64, f64)| true;
+        for r in self
+            .net
+            .ribbons
+            .iter()
+            .filter(|r| r.bbox.intersects(min, max))
+        {
+            let l = &self.osm.lines[r.line];
+            let LineKind::Road { paved, .. } = l.kind else {
+                continue;
+            };
+            let (width, lanes) = roadnet::carriageway(l);
+            let centre = roadnet::has_centre_line(l);
+            for run in runs_inside(&r.points, 6.0, &inside, &everywhere) {
+                let rel: Vec<(f64, f64)> = run.iter().map(|&(x, n)| (x - cx, -(n - cn))).collect();
+                road_ribbon(
+                    &mut detail.roads,
+                    &rel,
+                    width,
+                    roadnet::ribbon_lift(l),
+                    &rel_ground,
+                    if paved { f32::from(lanes) } else { 0.0 },
+                    if centre { marks::CENTRE_DASH } else { 0 },
+                );
+            }
+        }
         for l in self
             .osm
             .lines
             .iter()
-            .filter(|l| l.bbox.intersects(min, max))
+            .filter(|l| l.kind == LineKind::Waterway && l.bbox.intersects(min, max))
         {
-            let (width, lanes, marks, lift) = match l.kind {
-                LineKind::Road { paved, major } => {
-                    let (w, lanes) = roadnet::carriageway(l);
-                    let centre = paved && !l.info.oneway && lanes >= 2 && l.info.rank >= 3;
-                    (
-                        w,
-                        if paved { f32::from(lanes) } else { 0.0 },
-                        if centre { marks::CENTRE_DASH } else { 0 },
-                        if major { 0.14 } else { 0.11 },
-                    )
-                }
-                LineKind::Waterway => (l.width_m, -1.0, 0, 0.2),
-                LineKind::Path => continue,
-            };
-            let is_road = lanes >= 0.0;
-            // Loin du parcours seulement : les amorces passent par-dessus.
-            let clear = |p: (f64, f64)| {
-                !is_road
-                    || self
-                        .route_near(p.0, p.1, 20.0)
-                        .map_or(true, |(d, pr)| d >= pr.half_width + 0.5 + width / 2.0)
-            };
-            for run in runs_inside(&l.points, 6.0, &inside, &clear) {
+            for run in runs_inside(&l.points, 6.0, &inside, &everywhere) {
                 let rel: Vec<(f64, f64)> = run.iter().map(|&(x, n)| (x - cx, -(n - cn))).collect();
-                if is_road {
-                    road_ribbon(
-                        &mut detail.roads,
-                        &rel,
-                        width,
-                        lift,
-                        &rel_ground,
-                        lanes,
-                        marks,
-                    );
-                } else {
-                    ribbon(
-                        &mut detail.water,
-                        &rel,
-                        width,
-                        lift,
-                        &rel_ground,
-                        [0.15, 0.27, 0.33, 1.0],
-                    );
-                }
+                ribbon(
+                    &mut detail.water,
+                    &rel,
+                    l.width_m,
+                    0.2,
+                    &rel_ground,
+                    [0.15, 0.27, 0.33, 1.0],
+                );
             }
         }
         for a in &self.osm.areas {
