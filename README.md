@@ -55,9 +55,17 @@ La route suit un tracé lissé, rééchantillonné tous les mètres : enrobé av
 
 Avec OpenStreetMap, la route devient celle de la réalité : le tracé du GPX est recalé sur la route OSM, la largeur et le nombre de voies viennent des étiquettes `width` et `lanes` (sinon du type de route), avec axe discontinu, continu dans les lacets, et séparations de voies. Les trottoirs viennent de `sidewalk` ; quand OSM ne dit rien, une rue bordée de façades en reçoit un. Les routes qui débouchent sur le parcours partent de leur vrai nœud de jonction, sous la chaussée, avec la même pente qu'elle : amorce de 30 m évasée au carrefour (moins quand elle arrive en biais), ligne « cédez le passage » et rive discontinue sur la route principale ; au-delà, elles continuent drapées sur le relief avec le même enrobé (ou en piste de terre). Une route qui longe le parcours ou le croise sans s'y raccorder (pont, voie parallèle) reste dessinée telle quelle. Les ronds-points (`junction=roundabout`, ou anneaux presque circulaires) gardent leur vraie forme, souvent ovale, et leur pente ; le cycliste y tient sa droite. L'exemple « Rond-point du Bourg-d'Oisans » en traverse un.
 
+![Sol détaillé au bord de la route](docs/captures/sol-bord-route.jpg)
+
+Près de la route, l'image aérienne, trop floue de près, laisse place à un sol dessiné : prairie avec ses touffes, ses brins et quelques fleurs, cailloux et éboulis sur les pentes raides, terre et aiguilles en forêt, enrobé, dalles ou pavés autour des maisons. La nature du sol vient de l'occupation OSM, de la pente et de la proximité des bâtiments. L'accotement utilise exactement la même texture, si bien qu'il se fond dans le sol sans couture ; plus loin, le sol dessiné rejoint l'image par une lisière irrégulière.
+
 ![Mur de soutènement dans la montée de l'Alpe d'Huez](docs/captures/mur-soutenement.jpg)
 
-Là où la montagne est raide au bord de la route, un mur de soutènement en moellons la retient (jusqu'à 4 m, avec une terrasse herbeuse au-dessus), ou, au-delà de 45°, la paroi est taillée dans le rocher ; au-dessus du vide, un parapet de 75 cm borde la chaussée.
+Là où la montagne est raide au bord de la route, un mur de soutènement en moellons la retient (jusqu'à 4 m, avec une terrasse herbeuse au-dessus) ; au-dessus du vide, un parapet de 75 cm borde la chaussée.
+
+![Falaise sculptée au bord de la route](docs/captures/falaise.jpg)
+
+Au-delà de 45°, une falaise sculptée se dresse au bord de la route : paroi en relief jusqu'à 30 m de haut, avec ses bancs inclinés en corniches, ses ravines, ses surplombs, ses coulures, ses lichens et un rebord herbeux qui rejoint la pente.
 
 ![Arche d'arrivée et barrières](docs/captures/arrivee.jpg)
 
