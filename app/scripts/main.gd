@@ -38,6 +38,9 @@ var _menu_status: Label
 
 
 func _ready() -> void:
+	# Sans import préalable par l'éditeur, Godot ne connaît pas encore l'extension.
+	if not ClassDB.class_exists("VeloRide"):
+		GDExtensionManager.load_extension("res://velotrace.gdextension")
 	if not ClassDB.class_exists("VeloRide"):
 		_show_fatal("Extension Rust absente : lance « cargo build -p velo-godot » à la racine du dépôt, puis relance.")
 		return

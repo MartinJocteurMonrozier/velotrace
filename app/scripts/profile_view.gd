@@ -53,6 +53,10 @@ func _draw() -> void:
 		var grade := (_elev[j] - _elev[i]) / maxf(_dist[j] - _dist[i], 0.1) * 100.0
 		var col := grade_color(grade)
 		col.a = 0.85
+		# Un segment au ras du bas forme un polygone plat que Godot refuse.
+		if bottom - minf(a.y, b.y) < 0.5 or b.x - a.x < 0.01:
+			i = j
+			continue
 		draw_colored_polygon(PackedVector2Array([a, b, Vector2(b.x, bottom), Vector2(a.x, bottom)]), col)
 		i = j
 	var here := position_m
