@@ -107,7 +107,8 @@ static func _terrain(ride: Object, base_elev: float) -> Node3D:
 	return root
 
 
-## Chaussée lissée (un point par mètre) en tronçons, et balises de bord.
+## Chaussée lissée (un point par mètre) en tronçons, amorces des routes
+## adjacentes, ronds-points, et balises de bord.
 static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
 	var root := Node3D.new()
 	root.name = "Route"
@@ -119,6 +120,9 @@ static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
 		mi.material_override = mat
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(mi)
+	var bushes: PackedFloat32Array = ride.road_bushes(base_elev)
+	if not bushes.is_empty():
+		root.add_child(RealWorld._instances(bushes, Vegetation.bush()))
 	var posts: PackedFloat32Array = ride.road_posts(base_elev)
 	if not posts.is_empty():
 		var mm := MultiMesh.new()

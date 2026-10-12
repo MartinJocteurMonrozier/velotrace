@@ -8,6 +8,8 @@ pub struct MeshData {
     pub positions: Vec<[f32; 3]>,
     pub normals: Vec<[f32; 3]>,
     pub uvs: Vec<[f32; 2]>,
+    /// Second jeu d'UV (facultatif : vide ou un par sommet).
+    pub uv2s: Vec<[f32; 2]>,
     pub colors: Vec<[f32; 4]>,
     pub indices: Vec<i32>,
 }
@@ -192,6 +194,44 @@ pub fn ribbon(
         let a = base + k * 2;
         m.push_tri(a, a + 2, a + 1, [0.0, 1.0, 0.0]);
         m.push_tri(a + 1, a + 2, a + 3, [0.0, 1.0, 0.0]);
+    }
+}
+
+/// Route drapée sur le sol, pour le shader de chaussée : UV (écart à l'axe,
+/// abscisse), UV2 (demi-largeur, voies ; 0 voie pour une piste non revêtue)
+/// et marquages dans l'alpha de la couleur (voir `road::push_strip`).
+pub fn road_ribbon(
+    m: &mut MeshData,
+    points: &[(f64, f64)],
+    width_m: f64,
+    lift_m: f64,
+    ground: &dyn Fn(f64, f64) -> f64,
+    lanes: f32,
+    marks: u8,
+) {
+    let first = m.positions.len();
+    ribbon(
+        m,
+        points,
+        width_m,
+        lift_m,
+        ground,
+        [0.0, 0.0, 0.0, f32::from(marks) / 255.0],
+    );
+    if m.positions.len() == first {
+        return;
+    }
+    let half = (width_m / 2.0) as f32;
+    let mut s = 0.0;
+    for (k, &(x, z)) in points.iter().enumerate() {
+        if k > 0 {
+            let (px, pz) = points[k - 1];
+            s += ((x - px).powi(2) + (z - pz).powi(2)).sqrt();
+        }
+        for u in [-half, half] {
+            m.uvs.push([u, s as f32]);
+            m.uv2s.push([half, lanes]);
+        }
     }
 }
 
