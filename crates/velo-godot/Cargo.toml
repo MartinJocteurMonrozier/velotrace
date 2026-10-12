@@ -12,5 +12,10 @@ crate-type = ["cdylib"]
 [dependencies]
 velo-core = { path = "../velo-core" }
 velo-world = { path = "../velo-world" }
+velo-store = { path = "../velo-store" }
+velo-strava = { path = "../velo-strava" }
+velo-ble = { path = "../velo-ble" }
 # api-4-5 : l'extension fonctionne avec Godot 4.5 et toutes les versions suivantes.
 godot = { version = "0.5", features = ["api-4-5"] }
+dirs = "6"
+toml = "0.8"

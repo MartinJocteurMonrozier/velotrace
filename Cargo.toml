@@ -1,6 +1,14 @@
 [workspace]
 resolver = "2"
-members = ["crates/velo-core", "crates/velo-world", "crates/velo-probe", "crates/velo-godot"]
+members = [
+    "crates/velo-core",
+    "crates/velo-world",
+    "crates/velo-store",
+    "crates/velo-strava",
+    "crates/velo-probe",
+    "crates/velo-ble",
+    "crates/velo-godot",
+]
 
 # Le cœur est optimisé même en mode debug : Godot charge la version debug de
 # l'extension depuis l'éditeur, et la génération du relief doit rester rapide.

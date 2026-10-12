@@ -42,6 +42,8 @@ pub struct Ride {
     heart_rate_bpm: Option<u16>,
     /// La cadence du capteur dédié prime sur celle du trainer.
     has_cadence_sensor: bool,
+    /// Consigne ERG (W) : le trainer impose la puissance au lieu de la pente.
+    erg_target_w: Option<f64>,
 }
 
 impl Ride {
@@ -60,7 +62,29 @@ impl Ride {
             last: Inputs::default(),
             heart_rate_bpm: None,
             has_cadence_sensor: false,
+            erg_target_w: None,
         }
+    }
+
+    /// Active le mode ERG avec une puissance cible, ou revient à la pente
+    /// simulée avec `None`.
+    pub fn set_erg_target(&mut self, watts: Option<f64>) {
+        self.erg_target_w = watts.map(|w| w.max(0.0));
+    }
+
+    pub fn erg_target(&self) -> Option<f64> {
+        self.erg_target_w
+    }
+
+    /// Change le poids du cycliste en cours de sortie (menu de pause).
+    pub fn set_rider_weight(&mut self, kg: f64) {
+        self.profile.rider.weight_kg = kg.max(1.0);
+        self.params.mass_kg = self.profile.total_mass_kg();
+    }
+
+    /// Change la difficulté des pentes en cours de sortie (1,0 = réalité).
+    pub fn set_grade_difficulty(&mut self, factor: f64) {
+        self.profile.trainer.grade_difficulty = factor.max(0.0);
     }
 
     /// Place le cycliste à une distance donnée du départ (essais, reprise).
@@ -132,9 +156,13 @@ impl Ride {
         }
     }
 
-    /// Commande à envoyer au home trainer : pente effective tenant compte du
-    /// rapport virtuel, de la difficulté choisie et des limites du trainer.
+    /// Commande à envoyer au home trainer : puissance cible en mode ERG,
+    /// sinon pente effective tenant compte du rapport virtuel, de la
+    /// difficulté choisie et des limites du trainer.
     pub fn trainer_command(&self) -> ControlCommand {
+        if let Some(w) = self.erg_target_w {
+            return ControlCommand::TargetPower(w.round().min(i16::MAX as f64) as i16);
+        }
         let t = &self.profile.trainer;
         let road = self.route.grade_at(self.distance_m) * t.grade_difficulty;
         let physical = Gear {
@@ -213,5 +241,53 @@ mod tests {
         ride.gearbox.shift_up();
         ride.gearbox.shift_up();
         assert!(grade(&ride) > before);
+    }
+
+    #[test]
+    fn erg_target_replaces_the_grade() {
+        let mut ride = Ride::new(Profile::martin(), flat_route(1000.0));
+        ride.set_erg_target(Some(212.4));
+        assert_eq!(ride.trainer_command(), ControlCommand::TargetPower(212));
+        ride.set_erg_target(None);
+        assert!(matches!(
+            ride.trainer_command(),
+            ControlCommand::Simulation { .. }
+        ));
+    }
+
+    #[test]
+    fn weight_and_difficulty_change_mid_ride() {
+        let deg = (2000.0 / 6_371_008.8f64).to_degrees();
+        let climb = Route::from_lat_lon_ele(
+            None,
+            &[(45.0, 6.0, 100.0), (45.0 + deg, 6.0, 200.0)],
+            5.0,
+            40.0,
+        )
+        .unwrap();
+        let inputs = Inputs {
+            power_w: 200.0,
+            cadence_rpm: 0.0,
+        };
+        let speed_after = |kg: f64| {
+            let mut ride = Ride::new(Profile::martin(), climb.clone());
+            ride.set_rider_weight(kg);
+            for _ in 0..1200 {
+                ride.tick(inputs, 0.05);
+            }
+            ride.telemetry().speed_ms
+        };
+        assert!(speed_after(50.0) > speed_after(80.0));
+
+        let mut ride = Ride::new(Profile::martin(), climb);
+        ride.skip_to(1000.0);
+        let grade = |r: &Ride| match r.trainer_command() {
+            ControlCommand::Simulation { grade, .. } => grade,
+            _ => unreachable!(),
+        };
+        let full = grade(&ride);
+        ride.set_grade_difficulty(0.5);
+        assert!((grade(&ride) - full * 0.5).abs() < 1e-3, "{full}");
+        assert_eq!(ride.profile.trainer.grade_difficulty, 0.5);
     }
 }

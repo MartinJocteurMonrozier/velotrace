@@ -1,0 +1,14 @@
+[package]
+name = "velo-strava"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Envoi des sorties de velotrace vers Strava (OAuth et téléversement FIT)"
+license = "MIT"
+
+[dependencies]
+ureq = { version = "2.12", features = ["native-certs", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+thiserror = "1"

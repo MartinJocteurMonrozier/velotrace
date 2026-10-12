@@ -69,8 +69,12 @@ pub struct SimulatedDevices {
     crr: f64,
     cw_kg_m: f64,
     controlled: bool,
+    /// Consigne ERG reçue (W) ; la pente est alors ignorée.
+    erg_target_w: Option<f64>,
     pending_clicks: Vec<Shift>,
     power_w: f64,
+    /// Puissance sans bruit, point de départ de la réponse ERG.
+    smooth_power_w: f64,
     heart_rate: f64,
     crank_revs: f64,
     crank_time_s: f64,
@@ -95,8 +99,10 @@ impl SimulatedDevices {
             crr: profile.bike.crr,
             cw_kg_m: 0.5 * 1.2 * profile.bike.cda_m2,
             controlled: false,
+            erg_target_w: None,
             pending_clicks: Vec::new(),
             power_w: 0.0,
+            smooth_power_w: 0.0,
             heart_rate: settings.resting_hr,
             crank_revs: 0.0,
             crank_time_s: 0.0,
@@ -119,6 +125,16 @@ impl SimulatedDevices {
 
     pub fn current_grade(&self) -> f64 {
         self.grade
+    }
+
+    /// Consigne ERG en cours, si le trainer est en mode puissance imposée.
+    pub fn erg_target(&self) -> Option<f64> {
+        self.erg_target_w
+    }
+
+    /// Dernière puissance produite par le cycliste virtuel (W).
+    pub fn current_power(&self) -> f64 {
+        self.power_w
     }
 
     fn cadence(&self) -> f64 {
@@ -165,6 +181,8 @@ impl SimulatedDevices {
 }
 
 const FRAME_PERIOD_S: f64 = 0.25;
+/// Constante de temps du trainer pour rejoindre la consigne ERG.
+const ERG_RESPONSE_S: f64 = 1.5;
 
 impl DeviceHub for SimulatedDevices {
     fn send(&mut self, command: ControlCommand) {
@@ -175,8 +193,15 @@ impl DeviceHub for SimulatedDevices {
             0x01 => {
                 self.controlled = false;
                 self.grade = 0.0;
+                self.erg_target_w = None;
+            }
+            0x05 if self.controlled => {
+                let w = i16::from_le_bytes([bytes[1], bytes[2]]);
+                self.erg_target_w = Some(w.max(0) as f64);
             }
             0x11 if self.controlled => {
+                // Une consigne de pente quitte le mode ERG.
+                self.erg_target_w = None;
                 self.grade = i16::from_le_bytes([bytes[3], bytes[4]]) as f64 / 10_000.0;
                 self.crr = bytes[5] as f64 / 10_000.0;
                 self.cw_kg_m = bytes[6] as f64 / 100.0;
@@ -193,10 +218,17 @@ impl DeviceHub for SimulatedDevices {
             .collect();
 
         let cadence = self.cadence();
-        let target = match self.settings.rider {
-            RiderModel::Power { watts, .. } => watts,
-            RiderModel::Cadence { rpm } => self.trainer_power(rpm),
+        let target = match (self.erg_target_w, self.settings.rider) {
+            // ERG : le frein rejoint la consigne quel que soit le pédalage
+            // (réponse du premier ordre), en partant de la puissance actuelle.
+            (Some(erg), _) => {
+                let current = self.smooth_power_w;
+                current + (erg - current) * (dt / ERG_RESPONSE_S).min(1.0)
+            }
+            (None, RiderModel::Power { watts, .. }) => watts,
+            (None, RiderModel::Cadence { rpm }) => self.trainer_power(rpm),
         };
+        self.smooth_power_w = target;
         self.power_w = (target * (1.0 + self.settings.power_noise * self.noise())).max(0.0);
 
         // Le dernier tour de manivelle complet fixe l'horodatage CSC.
@@ -213,7 +245,8 @@ impl DeviceHub for SimulatedDevices {
         self.heart_rate += (hr_target - self.heart_rate) * (dt / 30.0).min(1.0);
 
         self.since_shift_s += dt;
-        if let Some(a) = self.settings.auto_shift {
+        // En ERG, changer de rapport ne change pas la puissance : pas de clic.
+        if let (Some(a), None) = (self.settings.auto_shift, self.erg_target_w) {
             if self.since_shift_s >= a.interval_s {
                 let click = if self.power_w > a.max_w {
                     Some(Shift::Down)
@@ -326,6 +359,77 @@ mod tests {
         assert!(t.gear.chainring == 36, "{:?}", t.gear);
         assert!((100.0..300.0).contains(&t.power_w), "{} W", t.power_w);
         assert!(t.heart_rate_bpm.unwrap() > 100);
+    }
+
+    #[test]
+    fn erg_target_needs_control_and_slope_cancels_it() {
+        let p = Profile::martin();
+        let mut sim = SimulatedDevices::new(&p, SimSettings::default());
+        sim.send(ControlCommand::TargetPower(250));
+        assert_eq!(sim.erg_target(), None);
+        sim.send(ControlCommand::RequestControl);
+        sim.send(ControlCommand::TargetPower(250));
+        assert_eq!(sim.erg_target(), Some(250.0));
+        sim.send(ControlCommand::Simulation {
+            wind_ms: 0.0,
+            grade: 0.02,
+            crr: 0.004,
+            cw_kg_m: 0.19,
+        });
+        assert_eq!(sim.erg_target(), None);
+        assert!((sim.current_grade() - 0.02).abs() < 1e-9);
+    }
+
+    #[test]
+    fn erg_power_follows_target_with_first_order_response() {
+        let p = Profile::martin();
+        let settings = SimSettings {
+            rider: RiderModel::Power {
+                watts: 150.0,
+                cadence_rpm: 90.0,
+            },
+            power_noise: 0.0,
+            ..SimSettings::default()
+        };
+        let mut sim = SimulatedDevices::new(&p, settings);
+        sim.send(ControlCommand::RequestControl);
+        let dt = 0.05;
+        for _ in 0..40 {
+            sim.poll(dt);
+        }
+        assert!((sim.current_power() - 150.0).abs() < 1e-9);
+        sim.send(ControlCommand::TargetPower(300));
+        for _ in 0..30 {
+            sim.poll(dt);
+        }
+        // Après une constante de temps : environ 63 % du chemin.
+        let after = sim.current_power();
+        assert!((235.0..260.0).contains(&after), "{after} W");
+        for _ in 0..200 {
+            sim.poll(dt);
+        }
+        assert!((sim.current_power() - 300.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn erg_ride_holds_power_on_a_climb_without_shifting() {
+        // Cycliste à cadence imposée et Click automatiques : en ERG, la
+        // puissance suit la consigne et les Click restent muets.
+        let p = Profile::martin();
+        let mut sim = SimulatedDevices::new(&p, SimSettings::default());
+        sim.send(ControlCommand::RequestControl);
+        let mut ride = Ride::new(p, route(20_000.0, 0.07));
+        ride.set_erg_target(Some(180.0));
+        let gear = ride.gearbox.index();
+        run(&mut ride, &mut sim, 60.0);
+        let t = ride.telemetry();
+        assert_eq!(ride.gearbox.index(), gear);
+        assert!((170.0..190.0).contains(&t.power_w), "{} W", t.power_w);
+        // Retour à la pente simulée : les Click reprennent la main.
+        ride.set_erg_target(None);
+        run(&mut ride, &mut sim, 60.0);
+        assert_eq!(sim.erg_target(), None);
+        assert_ne!(ride.gearbox.index(), gear);
     }
 
     #[test]
