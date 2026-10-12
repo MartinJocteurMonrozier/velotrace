@@ -1,22 +1,38 @@
 extends RefCounted
-## Construit le décor autour du parcours : ciel, soleil, relief, route, arbres.
+## Construit le décor autour du parcours : ciel, soleil, route, puis soit le
+## décor réel (relief, images aériennes, OSM via velo-world), soit un décor
+## simplifié procédural quand rien n'est disponible.
 
 const ROAD_HALF_WIDTH := 3.0
 const TILE_SIZE := 200.0
 const TILE_CELLS := 20
 const TERRAIN_MARGIN := 450.0
 const ROAD_SHADER := preload("res://shaders/road.gdshader")
+const RealWorld := preload("res://scripts/real_world.gd")
+## Ombres du soleil selon la qualité : distance maximale et découpage.
+const SHADOW_DISTANCE := [60.0, 120.0, 220.0]
+## Brouillard : distance à laquelle le décor disparaît presque.
+const FOG_REACH := [3500.0, 5000.0, 7000.0]
 
 
-static func build(ride: Object, parent: Node3D, base_elev: float) -> void:
-	parent.add_child(_environment())
-	parent.add_child(_sun())
-	parent.add_child(_terrain(ride, base_elev))
+## Construit le décor. Avec `real`, renvoie le nœud du décor réel (qui
+## charge les carrés détaillés autour de son `focus`), sinon `null`.
+static func build(ride: Object, parent: Node3D, base_elev: float, quality := 1, real := false) -> Node3D:
+	parent.add_child(_environment(quality))
+	parent.add_child(_sun(quality))
 	parent.add_child(_road(ride.route_points(), ride.route_distances(), base_elev))
+	if real:
+		var rw := RealWorld.new()
+		rw.name = "DecorReel"
+		parent.add_child(rw)
+		rw.setup(ride, quality)
+		return rw
+	parent.add_child(_terrain(ride, base_elev))
 	parent.add_child(_trees(ride, base_elev))
+	return null
 
 
-static func _environment() -> WorldEnvironment:
+static func _environment(quality: int) -> WorldEnvironment:
 	var sky_mat := ProceduralSkyMaterial.new()
 	sky_mat.sky_top_color = Color(0.32, 0.52, 0.85)
 	sky_mat.sky_horizon_color = Color(0.72, 0.80, 0.90)
@@ -24,6 +40,8 @@ static func _environment() -> WorldEnvironment:
 	sky_mat.ground_bottom_color = Color(0.25, 0.32, 0.25)
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
+	# Ciel fixe : une petite carte de radiance suffit et coûte peu.
+	sky.radiance_size = Sky.RADIANCE_SIZE_64 if quality == 0 else Sky.RADIANCE_SIZE_128
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
@@ -32,19 +50,20 @@ static func _environment() -> WorldEnvironment:
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.70, 0.78, 0.88)
-	env.fog_density = 0.00035
+	env.fog_density = 1.7 / FOG_REACH[quality]
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	return we
 
 
-static func _sun() -> DirectionalLight3D:
+static func _sun(quality: int) -> DirectionalLight3D:
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-48.0, -35.0, 0.0)
 	sun.light_energy = 1.2
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 250.0
+	sun.directional_shadow_max_distance = SHADOW_DISTANCE[quality]
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if quality == 2 else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	return sun
 
 
