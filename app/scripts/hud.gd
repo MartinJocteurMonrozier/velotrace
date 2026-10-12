@@ -15,6 +15,9 @@ var _route: Label
 var _progress: Label
 var _clock: Label
 var _banner: Label
+var _credits: Label
+var _fps: Label
+var _fps_timer := 0.0
 var _power_samples: Array = []
 var _elapsed := 0.0
 
@@ -118,6 +121,25 @@ func _ready() -> void:
 	tag.offset_bottom = -156
 	root.add_child(tag)
 
+	_fps = _label("", 13, Color(1, 1, 1, 0.6))
+	_fps.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
+	_fps.offset_left = -260
+	_fps.offset_right = -130
+	_fps.offset_top = -178
+	_fps.offset_bottom = -156
+	_fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	root.add_child(_fps)
+
+	# Sources du décor, obligatoires pour les données IGN et OSM.
+	_credits = _label("", 11, Color(1, 1, 1, 0.55))
+	_credits.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_credits.offset_left = 20
+	_credits.offset_right = -20
+	_credits.offset_top = -14
+	_credits.offset_bottom = 0
+	_credits.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	root.add_child(_credits)
+
 	_banner = _label("", 54)
 	_banner.set_anchors_preset(Control.PRESET_CENTER)
 	_banner.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -136,6 +158,10 @@ func setup(route_name: String, distances: PackedFloat32Array, points: PackedVect
 	_minimap.setup(points)
 
 
+func set_credits(text: String) -> void:
+	_credits.text = text
+
+
 func show_banner(text: String) -> void:
 	_banner.text = text
 
@@ -144,6 +170,10 @@ func update(t: Dictionary, delta: float) -> void:
 	if t.is_empty():
 		return
 	_elapsed += delta
+	_fps_timer -= delta
+	if _fps_timer <= 0.0:
+		_fps_timer = 0.5
+		_fps.text = "%d i/s" % Engine.get_frames_per_second()
 	_power_samples.append([_elapsed, t.power_w])
 	while _power_samples.size() > 1 and _elapsed - _power_samples[0][0] > 3.0:
 		_power_samples.pop_front()

@@ -63,6 +63,11 @@ impl Ride {
         }
     }
 
+    /// Place le cycliste à une distance donnée du départ (essais, reprise).
+    pub fn skip_to(&mut self, distance_m: f64) {
+        self.distance_m = distance_m.clamp(0.0, self.route.length_m());
+    }
+
     pub fn finished(&self) -> bool {
         self.distance_m >= self.route.length_m()
     }

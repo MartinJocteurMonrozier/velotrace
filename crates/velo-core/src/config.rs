@@ -8,12 +8,52 @@ pub struct Profile {
     pub trainer: Trainer,
     #[serde(default)]
     pub app: AppSettings,
+    #[serde(default)]
+    pub scenery: Scenery,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AppSettings {
     /// Mode test : home trainer, cadence, FC et Click simulés, sans Bluetooth.
     pub test_mode: bool,
+}
+
+/// Décor : relief, images aériennes et données OpenStreetMap.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Scenery {
+    /// 0 = basse, 1 = moyenne, 2 = haute.
+    pub quality: u8,
+    /// Télécharge ce qui manque ; sinon on se contente du cache.
+    pub online: bool,
+    /// Remplace l'altitude du GPX par celle du relief (plus régulière).
+    pub use_dem_elevation: bool,
+    /// Tuiles d'altitude « terrarium » : {z}, {x}, {y}.
+    pub elevation_url: String,
+    /// Tuiles d'images aériennes (WMTS ou XYZ) : {z}, {x}, {y}. Vide = pas d'images.
+    pub imagery_url: String,
+    /// Serveur Overpass pour les forêts, bâtiments, eau et routes.
+    pub overpass_url: String,
+    /// Dossier du cache ; vide = dossier de cache de l'utilisateur.
+    pub cache_dir: String,
+}
+
+impl Default for Scenery {
+    fn default() -> Self {
+        Self {
+            quality: 1,
+            online: true,
+            use_dem_elevation: true,
+            elevation_url:
+                "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png".into(),
+            imagery_url: "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0\
+                          &LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM\
+                          &TILEMATRIX={z}&TILEROW={y}&TILECOL={x}&FORMAT=image/jpeg"
+                .into(),
+            overpass_url: "https://overpass-api.de/api/interpreter".into(),
+            cache_dir: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -78,6 +118,7 @@ impl Profile {
                 max_grade: 0.20,
             },
             app: AppSettings::default(),
+            scenery: Scenery::default(),
         }
     }
 
@@ -104,5 +145,19 @@ mod tests {
         let back = Profile::from_toml(&p.to_toml().unwrap()).unwrap();
         assert_eq!(p, back);
         assert_eq!(p.total_mass_kg(), 70.0);
+    }
+
+    #[test]
+    fn old_profiles_get_default_scenery() {
+        let mut p = Profile::martin();
+        let text = p.to_toml().unwrap();
+        let cut = text.find("[scenery]").unwrap();
+        let back = Profile::from_toml(&text[..cut]).unwrap();
+        p.scenery = Scenery::default();
+        assert_eq!(back, p);
+        assert!(p
+            .scenery
+            .imagery_url
+            .contains("TILEMATRIX={z}&TILEROW={y}&TILECOL={x}"));
     }
 }

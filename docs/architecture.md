@@ -102,6 +102,14 @@ Pipeline d'import exécuté une fois par GPX, résultat mis en cache sur disque 
 6. **Végétation** : arbres instanciés (MultiMesh) dans les polygones de forêt, haies et arbres isolés OSM.
 7. **Ciel et lumière** : ciel procédural, heure du jour réglable.
 
+**Implémentation actuelle (crate `velo-world`)** :
+
+- relief : tuiles terrarium zoom 13 (~13 m), couloir de 2,5 à 6 km selon la qualité ; altitude du parcours = relief, médiane glissante 100 m puis moyenne 200 m (Alpe d'Huez : D+ 1 072 m) ; sol aplani sous la chaussée sur 5 à 40 m ;
+- deux niveaux de décor : grands carrés de 2 048 m (maille 32 à 64 m, texture 256 ou 512 px) construits au chargement, et carrés détaillés de 512 m (maille 8 m, texture 256 à 1 024 px, arbres, bâtiments, routes, eau) générés par des fils de travail autour du cycliste et libérés derrière lui. Un masque d'un texel par carré de 512 m retire le grand carré là où un carré détaillé est chargé, et des jupes cachent les jointures ;
+- images aériennes : WMTS IGN par défaut, URL modifiable dans le profil (`[scenery]`), repli sur trois zooms moins fins puis sur une couleur calculée (altitude, pente, occupation OSM) ;
+- arbres : cases fixes de 5,5 à 9 m ; un arbre y pousse selon OSM (forêt) et la couleur de l'image (vert sombre), sapin ou feuillu selon `leaf_type` et l'altitude ; MultiMesh par carré avec distance d'affichage ;
+- OSM : requête Overpass « around » le long du parcours, mise en cache ; ou fichier JSON (`--osm-fichier`).
+
 L'**avatar** : modèle de cycliste et de vélo libres de droits (ou réalisés sous Blender), pédalage synchronisé sur la cadence réelle avec une IK des jambes (pieds liés aux pédales), position du buste selon la pente et la vitesse. Caméras : arrière (par défaut), première personne, drone.
 
 ## 6. Overlay (HUD)

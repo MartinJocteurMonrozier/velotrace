@@ -8,15 +8,27 @@ extends Node3D
 ##   --camera <0|1|2>       caméra arrière, de côté ou haute
 ##   --capture <png>        enregistre une capture puis quitte
 ##   --capture-apres <s>    temps de sortie avant la capture (8 s par défaut)
+##   --decor <reel|cache|simple>  décor réel téléchargé, réel depuis le cache, ou simplifié
+##   --qualite <0|1|2>      qualité graphique basse, moyenne ou haute
+##   --osm-fichier <json>   données OSM (JSON Overpass) à la place d'Overpass
+##   --images <url>         source d'images aériennes ({z}/{x}/{y}, file:// accepté)
+##   --aller-a <m>          démarre la sortie à cette distance (essais)
 
 const World := preload("res://scripts/world.gd")
 const Cyclist := preload("res://scripts/cyclist.gd")
 const Hud := preload("res://scripts/hud.gd")
 
 const EXAMPLES := {
+	"Alpe d'Huez depuis Le Bourg-d'Oisans (14 km)": "res://../data/alpe-d-huez.gpx",
 	"Vallée puis lacets (7,5 km)": "res://../data/exemple-lacets.gpx",
 	"Plat puis col à 7 % (8 km)": "res://../data/exemple-col.gpx",
 }
+const DECORS := ["reel", "cache", "simple"]
+const QUALITY_NAMES := ["Basse", "Moyenne", "Haute"]
+## Échelle de rendu 3D (FSR) selon la qualité : l'interface reste nette.
+const RENDER_SCALE := [0.67, 0.85, 1.0]
+## Délai maximal d'attente des carrés détaillés autour du départ.
+const NEAR_WAIT_S := 45.0
 
 var ride: Node
 var _base_elev := 0.0
@@ -35,6 +47,18 @@ var _capture_after := 8.0
 var _ride_time := 0.0
 var _menu: CanvasLayer
 var _menu_status: Label
+var _decor := "reel"
+var _quality := 1
+var _osm_file := ""
+var _skip_to := 0.0
+var _imagery_url := ""
+var _real_world: Node3D
+var _loading: CanvasLayer
+var _loading_bar: ProgressBar
+var _loading_label: Label
+var _loading_phase := ""
+var _loading_time := 0.0
+var _decor_note := ""
 
 
 func _ready() -> void:
@@ -73,6 +97,16 @@ func _parse_args() -> void:
 				_capture_path = val
 			"--capture-apres":
 				_capture_after = val.to_float()
+			"--decor":
+				_decor = val if val in DECORS else "reel"
+			"--qualite":
+				_quality = clampi(val.to_int(), 0, 2)
+			"--osm-fichier":
+				_osm_file = val
+			"--images":
+				_imagery_url = val
+			"--aller-a":
+				_skip_to = val.to_float()
 		i += 2
 
 
@@ -127,6 +161,21 @@ func _build_menu() -> void:
 		_mode_value = 88.0 if i == 0 else 200.0)
 	box.add_child(mode)
 
+	box.add_child(_section("Décor et graphismes"))
+	var decor := OptionButton.new()
+	decor.add_item("Réel : relief, images aériennes et OpenStreetMap")
+	decor.add_item("Réel sans connexion (données déjà en cache)")
+	decor.add_item("Simplifié (aucun téléchargement)")
+	decor.selected = DECORS.find(_decor)
+	decor.item_selected.connect(func(i: int): _decor = DECORS[i])
+	box.add_child(decor)
+	var quality := OptionButton.new()
+	for q in QUALITY_NAMES.size():
+		quality.add_item("Qualité %s" % QUALITY_NAMES[q].to_lower())
+	quality.selected = _quality
+	quality.item_selected.connect(func(i: int): _quality = i)
+	box.add_child(quality)
+
 	var go := Button.new()
 	go.text = "Rouler"
 	go.add_theme_font_size_override("font_size", 26)
@@ -172,18 +221,116 @@ func _start() -> void:
 		return
 	if _menu:
 		_menu.queue_free()
+		_menu = null
+	_apply_quality()
+	if _decor == "simple":
+		_build_scene(false)
+		_begin_ride()
+		return
+	if _imagery_url != "":
+		ride.set_imagery_url(_imagery_url)
+	ride.start_world(_quality, _decor == "reel", _osm_file)
+	_show_loading()
+
+
+## Réglages de rendu selon la qualité : moins de pixels 3D, d'ombres et
+## d'anticrénelage sur les petites machines, 60 images/s au plus.
+func _apply_quality() -> void:
+	Engine.max_fps = 60
+	var vp := get_viewport()
+	vp.scaling_3d_scale = RENDER_SCALE[_quality]
+	vp.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR if _quality < 2 else Viewport.SCALING_3D_MODE_BILINEAR
+	vp.msaa_3d = Viewport.MSAA_2X if _quality == 2 else Viewport.MSAA_DISABLED
+	vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA if _quality == 1 else Viewport.SCREEN_SPACE_AA_DISABLED
+	RenderingServer.directional_shadow_atlas_set_size(2048 if _quality == 0 else 4096, true)
+	RenderingServer.directional_soft_shadow_filter_set_quality(
+		[RenderingServer.SHADOW_QUALITY_HARD, RenderingServer.SHADOW_QUALITY_SOFT_LOW, RenderingServer.SHADOW_QUALITY_SOFT_MEDIUM][_quality])
+
+
+func _show_loading() -> void:
+	_loading = CanvasLayer.new()
+	_loading.layer = 10
+	add_child(_loading)
+	var bg := ColorRect.new()
+	bg.color = Color(0.05, 0.08, 0.12)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_loading.add_child(bg)
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_loading.add_child(center)
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(560, 0)
+	box.add_theme_constant_override("separation", 12)
+	center.add_child(box)
+	var title := Label.new()
+	title.text = ride.route_name()
+	title.add_theme_font_size_override("font_size", 34)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(title)
+	_loading_bar = ProgressBar.new()
+	_loading_bar.max_value = 1.0
+	_loading_bar.custom_minimum_size = Vector2(0, 22)
+	box.add_child(_loading_bar)
+	_loading_label = Label.new()
+	_loading_label.text = "Préparation du décor…"
+	_loading_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_loading_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	_loading_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	box.add_child(_loading_label)
+	_loading_phase = "monde"
+	_loading_time = 0.0
+
+
+## Avance du chargement : construction du décor, puis carrés détaillés du départ.
+func _poll_loading(delta: float) -> void:
+	_loading_time += delta
+	if _loading_phase == "monde":
+		var st: Dictionary = ride.world_status()
+		match st.state:
+			"building":
+				_loading_bar.value = 0.8 * float(st.progress)
+				_loading_label.text = st.message
+			"ready":
+				_build_scene(true)
+				_loading_phase = "proches"
+				_loading_time = 0.0
+				print("Décor : ", st.message)
+			_:
+				_decor_note = "Décor réel indisponible (%s) : décor simplifié." % st.message
+				push_warning(_decor_note)
+				_build_scene(false)
+				_finish_loading()
+		return
+	var start: Vector3 = ride.route_points()[0] - Vector3(0.0, _base_elev, 0.0)
+	_real_world.focus = start
+	var r: Vector2i = _real_world.readiness(start)
+	_loading_bar.value = 0.8 + 0.2 * (float(r.x) / maxf(1.0, r.y))
+	_loading_label.text = "Décor détaillé autour du départ : %d / %d" % [r.x, r.y]
+	if r.x >= r.y or _loading_time > NEAR_WAIT_S:
+		_finish_loading()
+
+
+func _finish_loading() -> void:
+	_loading.queue_free()
+	_loading = null
+	_loading_phase = ""
+	_begin_ride()
+
+
+func _build_scene(real: bool) -> void:
 	var points: PackedVector3Array = ride.route_points()
 	_base_elev = points[0].y
 	var world := Node3D.new()
 	world.name = "Monde"
 	add_child(world)
-	World.build(ride, world, _base_elev)
+	_real_world = World.build(ride, world, _base_elev, _quality, real)
 
 	_cyclist = Cyclist.new()
 	add_child(_cyclist)
 	_camera = Camera3D.new()
 	_camera.fov = 70.0
-	_camera.far = 3000.0
+	_camera.near = 0.2
+	_camera.far = World.FOG_REACH[_quality] + 1500.0
 	add_child(_camera)
 	_camera.make_current()
 
@@ -193,13 +340,24 @@ func _start() -> void:
 	_hud = Hud.new()
 	add_child(_hud)
 	_hud.setup(ride.route_name(), ride.route_distances(), local, _base_elev)
+	_hud.set_credits(ride.world_credits() if real else "Décor simplifié")
 
+
+func _begin_ride() -> void:
 	ride.start_test(_mode, _mode_value)
+	if _skip_to > 0.0:
+		ride.skip_to(_skip_to)
 	_riding = true
 	_place_cyclist(0.0, true)
+	if _decor_note != "":
+		_hud.show_banner("Décor simplifié")
+		get_tree().create_timer(3.0).timeout.connect(func(): _hud.show_banner(""))
 
 
 func _process(delta: float) -> void:
+	if _loading_phase != "":
+		_poll_loading(delta)
+		return
 	if not _riding:
 		return
 	_ride_time += delta
@@ -219,6 +377,9 @@ func _place_cyclist(delta: float, snap: bool) -> void:
 	_cyclist.transform = Transform3D(Basis.looking_at(dir.normalized(), Vector3.UP), pos + Vector3(0.0, 0.05, 0.0))
 	_cyclist.animate(t.speed_kmh / 3.6, t.cadence_rpm, delta)
 	_update_camera(pos, dir, delta, snap)
+	if _real_world:
+		# Les carrés détaillés se chargent un peu en avant du cycliste.
+		_real_world.focus = pos + Vector3(dir.x, 0.0, dir.z).normalized() * 150.0
 	_hud.update(t, delta)
 	if t.finished and not _finished:
 		_finished = true
@@ -274,6 +435,19 @@ func _capture() -> void:
 	await RenderingServer.frame_post_draw
 	var path := _capture_path_arg()
 	get_viewport().get_texture().get_image().save_png(path)
+	print("Rendu : %d appels de dessin, %d triangles, %d Mo de mémoire vidéo, %d objets" % [
+		Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME),
+		Performance.get_monitor(Performance.RENDER_VIDEO_MEM_USED) / 1048576.0,
+		Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME)])
+	if OS.is_debug_build() and OS.get_environment("VELOTRACE_NOEUDS") != "":
+		var counts := {}
+		var stack: Array[Node] = [self]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			counts[n.get_class()] = counts.get(n.get_class(), 0) + 1
+			stack.append_array(n.get_children())
+		print(counts)
 	print("Capture enregistrée : ", path)
 	get_tree().quit()
 
