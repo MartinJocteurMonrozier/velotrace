@@ -4,7 +4,9 @@ use crate::elevation::{smooth_profile, Dem};
 use crate::geo::{mercator_px_x, mercator_px_y, meters_per_px, zoom_for, LocalProjection};
 use crate::mesh::{building, flat_polygon, ribbon, road_ribbon, terrain_grid, Instances, MeshData};
 use crate::osm::{Cover, LineKind, OsmData};
-use crate::raster::{cover_grid, ground_color, looks_like_trees, noise, rand01};
+use crate::raster::{
+    cover_grid, ground_color, ground_mix, land_at, land_grid, looks_like_trees, noise, rand01,
+};
 use crate::road::{marks, RoadPath};
 use crate::roadnet::{self, RoadNetwork};
 use crate::tiles::{TileCache, TileSource};
@@ -17,6 +19,10 @@ use velo_core::route::Route;
 
 /// Côté d'un carré proche (détaillé).
 pub const NEAR_SIZE: f64 = 512.0;
+/// Côté des cases de la carte de proximité des bâtiments (m).
+const BUILT_CELL: f64 = 8.0;
+/// Pixels de la carte du sol d'un carré proche (un tous les 4 m).
+const GROUND_PX: usize = 128;
 /// Côté d'un grand carré (lointain).
 pub const FAR_SIZE: f64 = 2048.0;
 /// Zoom des tuiles d'altitude (≈ 13 m par pixel dans les Alpes).
@@ -139,6 +145,8 @@ pub struct ChunkDetail {
     pub index: usize,
     pub terrain: MeshData,
     pub texture: Texture,
+    /// Nature du sol et proximité des chaussées (voir `ground_map`).
+    pub ground: Texture,
     pub conifers: Instances,
     pub broadleaves: Instances,
     pub bushes: Instances,
@@ -166,6 +174,9 @@ pub struct World {
     pub summary: String,
     dem: Dem,
     osm: OsmData,
+    /// Proximité des bâtiments par cases de `BUILT_CELL` m (0 à 255) : le
+    /// sol y est plutôt revêtu (cours, parkings, trottoirs).
+    built: HashMap<(i64, i64), u8>,
     cache: TileCache,
     imagery: TileSource,
     near_zoom: u8,
@@ -277,6 +288,7 @@ impl World {
             credits: String::new(),
             summary: String::new(),
             dem,
+            built: built_map(&osm),
             osm,
             cache,
             imagery,
@@ -337,13 +349,14 @@ impl World {
             .count() as f64
             / world.path.samples.len().max(1) as f64;
         world.summary = format!(
-            "relief {} tuiles · images aériennes {} % · {} · route : {} amorces, {} ronds-points, {} murs, trottoirs sur {} % · {} grands carrés, {} carrés détaillés",
+            "relief {} tuiles · images aériennes {} % · {} · route : {} amorces, {} ronds-points, {} murs, {} falaises, trottoirs sur {} % · {} grands carrés, {} carrés détaillés",
             world.dem.tile_count(),
             (share * 100.0).round(),
             osm_note,
             world.net.stubs.len(),
             world.net.roundabouts.len(),
             world.net.walls.len(),
+            world.net.cliffs.len(),
             (town * 100.0).round(),
             world.far.len(),
             world.near.len()
@@ -416,9 +429,8 @@ impl World {
             &|i, j| self.ground(cx - half + i as f64 * step, cn + half - j as f64 * step) - base,
             12.0,
         );
-        let (mut rgb, from_img) =
+        let (rgb, from_img) =
             self.compose(cx - half, cn + half, NEAR_SIZE, q.near_px, self.near_zoom);
-        self.paint_verges(&mut rgb, cx - half, cn + half, q.near_px);
         let image_px = |x: f64, n: f64| {
             let i = ((x - (cx - half)) / NEAR_SIZE * q.near_px as f64) as usize;
             let j = (((cn + half) - n) / NEAR_SIZE * q.near_px as f64) as usize;
@@ -434,6 +446,7 @@ impl World {
             index,
             terrain,
             texture: texture_from(&rgb, &from_img, q.near_px),
+            ground: self.ground_map(cx - half, cn + half),
             ..Default::default()
         };
 
@@ -725,53 +738,88 @@ impl World {
         out
     }
 
-    /// Près de la route, l'image aérienne (floue, et dont la vraie route ne
-    /// tombe jamais exactement sous la nôtre) cède la place à un accotement
-    /// herbeux qui se fond dans l'image à une dizaine de mètres.
-    fn paint_verges(&self, rgb: &mut [[u8; 3]], x0: f64, n1: f64, size: usize) {
-        let px = NEAR_SIZE / size as f64;
-        let reach = 11.0;
-        let mut near_road: crate::raster::Grid<u8> =
-            crate::raster::Grid::new(x0, n1, NEAR_SIZE, size, 0);
-        for w in self.path.samples.windows(2) {
-            let (a, b) = (&w[0], &w[1]);
-            if (a.x - x0 - NEAR_SIZE / 2.0).abs() > NEAR_SIZE / 2.0 + reach
-                || (n1 - NEAR_SIZE / 2.0 - a.n).abs() > NEAR_SIZE / 2.0 + reach
-            {
-                continue;
-            }
-            near_road.draw_line(&[(a.x, a.n), (b.x, b.n)], reach * 2.0, 1);
-        }
+    /// Pente du relief brut (m/m) : les talus taillés comptent, pas le
+    /// replat sous la chaussée.
+    fn dem_slope(&self, x: f64, n: f64) -> f64 {
+        let e = 6.0;
+        let gx = self.dem_height(x + e, n) - self.dem_height(x - e, n);
+        let gn = self.dem_height(x, n + e) - self.dem_height(x, n - e);
+        gx.hypot(gn) / (2.0 * e)
+    }
+
+    /// Proximité des bâtiments en (x, n), interpolée entre les cases.
+    fn built_at(&self, x: f64, n: f64) -> f64 {
+        let (fx, fn_) = (x / BUILT_CELL, n / BUILT_CELL);
+        let (kx, kn) = (fx.floor() as i64, fn_.floor() as i64);
+        let (tx, tn) = (fx - fx.floor(), fn_ - fn_.floor());
+        let v = |a: i64, b: i64| f64::from(self.built.get(&(a, b)).copied().unwrap_or(0)) / 255.0;
+        let lo = v(kx, kn) + (v(kx + 1, kn) - v(kx, kn)) * tx;
+        let hi = v(kx, kn + 1) + (v(kx + 1, kn + 1) - v(kx, kn + 1)) * tx;
+        lo + (hi - lo) * tn
+    }
+
+    /// Nature du sol en un point pour sa texture détaillée (herbe,
+    /// revêtement, cailloux en 0..255, le dernier octet à 255).
+    fn ground_kind(&self, x: f64, n: f64, cover: Cover) -> [u8; 4] {
+        let w = ground_mix(
+            cover,
+            self.built_at(x, n),
+            self.dem_height(x, n),
+            self.dem_slope(x, n),
+            x,
+            n,
+        );
+        [
+            (w[0] * 255.0).round() as u8,
+            (w[1] * 255.0).round() as u8,
+            (w[2] * 255.0).round() as u8,
+            255,
+        ]
+    }
+
+    /// Carte du sol d'un carré proche, un pixel tous les 4 m : nature du sol
+    /// (RGB, voir `ground_kind`) et, en alpha, la proximité d'une chaussée,
+    /// où le sol détaillé remplace l'image aérienne trop floue.
+    fn ground_map(&self, x0: f64, n1: f64) -> Texture {
+        let size = GROUND_PX;
+        let land = land_grid(&self.osm, x0, n1, NEAR_SIZE, size);
+        let mut data = vec![[0u8; 4]; size * size];
         for j in 0..size {
             for i in 0..size {
-                let k = j * size + i;
-                if near_road.data[k] == 0 {
-                    continue;
-                }
-                let (x, n) = (x0 + (i as f64 + 0.5) * px, n1 - (j as f64 + 0.5) * px);
-                let Some((d, k)) = self.net.samples.nearest(x, n, reach) else {
-                    continue;
-                };
-                let p = &self.path.samples[k];
-                let (rx, rn) = p.right();
-                let side = usize::from((x - p.x) * rx + (n - p.n) * rn > 0.0);
-                // En ville, l'image (façades, cours) reste telle quelle.
-                if p.profile.sidewalk[side] > 0.1 {
-                    continue;
-                }
-                let w = 1.0 - smoothstep(p.profile.reach(side) + 0.7, reach, d);
-                if w <= 0.0 {
-                    continue;
-                }
-                let v = noise(x * 0.35, n * 0.35) * 0.6 + noise(x * 1.7, n * 1.7) * 0.4;
-                let verge = [0.34 + 0.10 * v, 0.40 + 0.08 * v, 0.20 + 0.04 * v];
-                let c = &mut rgb[k];
-                for ch in 0..3 {
-                    let img = f64::from(c[ch]) / 255.0;
-                    c[ch] = ((img + (verge[ch] - img) * w) * 255.0).round() as u8;
-                }
+                let (x, n) = land.center(i, j);
+                let cover = Cover::from_u8(land.data[j * size + i]);
+                let mut px = self.ground_kind(x, n, cover);
+                let near = self.net.flat.weight(x, n).map_or(0.0, |(w, _)| w);
+                px[3] = ((near * 1.6).min(1.0) * 255.0).round() as u8;
+                data[j * size + i] = px;
             }
         }
+        texture_rgba(data, size)
+    }
+
+    /// Donne aux sommets d'une chaussée (accotements compris) la nature du
+    /// sol qui la borde (CUSTOM0), pour que l'accotement se fonde dans le sol.
+    pub fn paint_ground(&self, mesh: &mut MeshData) {
+        let (mut min, mut max) = ((f64::MAX, f64::MAX), (f64::MIN, f64::MIN));
+        for p in &mesh.positions {
+            let (x, n) = (f64::from(p[0]), -f64::from(p[2]));
+            min = (min.0.min(x), min.1.min(n));
+            max = (max.0.max(x), max.1.max(n));
+        }
+        let areas: Vec<&crate::osm::Area> = self
+            .osm
+            .areas
+            .iter()
+            .filter(|a| a.bbox.intersects(min, max))
+            .collect();
+        mesh.customs = mesh
+            .positions
+            .iter()
+            .map(|p| {
+                let (x, n) = (f64::from(p[0]), -f64::from(p[2]));
+                self.ground_kind(x, n, land_at(&areas, x, n))
+            })
+            .collect();
     }
 
     /// Couleurs d'un carré du sol vu du ciel : image aérienne quand elle
@@ -935,7 +983,45 @@ fn decode_photo(bytes: &[u8]) -> Option<image::RgbImage> {
 
 /// Texture RGBA avec mipmaps (moyenne 2×2 à chaque niveau).
 fn texture_from(rgb: &[[u8; 3]], from_img: &[bool], size: usize) -> Texture {
-    let mut level: Vec<[u8; 4]> = rgb.iter().map(|c| [c[0], c[1], c[2], 255]).collect();
+    let rgba: Vec<[u8; 4]> = rgb.iter().map(|c| [c[0], c[1], c[2], 255]).collect();
+    let mut t = texture_rgba(rgba, size);
+    t.imagery_share = from_img.iter().filter(|&&b| b).count() as f32 / from_img.len().max(1) as f32;
+    t
+}
+
+/// Proximité des bâtiments : 1 contre leurs murs, 0 à 25 m et au-delà.
+fn built_map(osm: &OsmData) -> HashMap<(i64, i64), u8> {
+    const REACH: f64 = 25.0;
+    let mut map: HashMap<(i64, i64), u8> = HashMap::new();
+    for b in &osm.buildings {
+        let (min, max) = (b.bbox.min, b.bbox.max);
+        let k0 = (
+            ((min.0 - REACH) / BUILT_CELL).floor() as i64,
+            ((min.1 - REACH) / BUILT_CELL).floor() as i64,
+        );
+        let k1 = (
+            ((max.0 + REACH) / BUILT_CELL).ceil() as i64,
+            ((max.1 + REACH) / BUILT_CELL).ceil() as i64,
+        );
+        for kx in k0.0..=k1.0 {
+            for kn in k0.1..=k1.1 {
+                let (x, n) = (kx as f64 * BUILT_CELL, kn as f64 * BUILT_CELL);
+                let dx = (min.0 - x).max(x - max.0).max(0.0);
+                let dn = (min.1 - n).max(n - max.1).max(0.0);
+                let near = 1.0 - smoothstep(3.0, REACH, dx.hypot(dn));
+                let v = (near * 255.0).round() as u8;
+                if v > 0 {
+                    let e = map.entry((kx, kn)).or_insert(0);
+                    *e = (*e).max(v);
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Texture RGBA carrée avec toute sa chaîne de mipmaps.
+fn texture_rgba(mut level: Vec<[u8; 4]>, size: usize) -> Texture {
     let mut data = Vec::with_capacity(size * size * 4 * 4 / 3 + 16);
     let mut s = size;
     loop {
@@ -963,8 +1049,7 @@ fn texture_from(rgb: &[[u8; 3]], from_img: &[bool], size: usize) -> Texture {
     Texture {
         size,
         data,
-        imagery_share: from_img.iter().filter(|&&b| b).count() as f32
-            / from_img.len().max(1) as f32,
+        imagery_share: 0.0,
     }
 }
 

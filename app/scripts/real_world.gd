@@ -119,6 +119,9 @@ func _integrate(d: Dictionary) -> void:
 	mat.shader = TERRAIN_SHADER
 	mat.set_shader_parameter("albedo_tex", d.texture)
 	mat.set_shader_parameter("detail_tex", _detail)
+	if d.has("ground"):
+		mat.set_shader_parameter("ground_tex", d.ground)
+		mat.set_shader_parameter("has_ground", true)
 	terrain.material_override = mat
 	terrain.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	node.add_child(terrain)

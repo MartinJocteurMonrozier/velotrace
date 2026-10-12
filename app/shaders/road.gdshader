@@ -4,7 +4,13 @@
 // UV2.x : demi-largeur de la chaussée (m) ; UV2.y : voies (< 0 : sens unique).
 // COLOR.r, COLOR.g : largeur des trottoirs gauche et droit (÷ 4 m) ;
 // COLOR.a : marquages (bits ÷ 255).
+// CUSTOM0 : nature du sol qui borde la chaussée (herbe, revêtement,
+// cailloux ; alpha à 1 quand elle est connue), pour que l'accotement se
+// fonde dans le sol détaillé du relief (ground.gdshaderinc).
 shader_type spatial;
+
+#include "res://shaders/ground.gdshaderinc"
+
 
 uniform vec3 asphalt : source_color = vec3(0.19, 0.19, 0.20);
 uniform vec3 asphalt_worn : source_color = vec3(0.30, 0.30, 0.30);
@@ -27,12 +33,16 @@ varying flat int v_marks;
 varying float v_half;
 varying float v_lanes;
 varying vec2 v_walk;
+varying vec4 v_ground;
+varying vec2 world_xz;
 
 void vertex() {
 	v_marks = int(round(COLOR.a * 255.0));
 	v_half = UV2.x;
 	v_lanes = UV2.y;
 	v_walk = COLOR.rg * 4.0;
+	v_ground = CUSTOM0;
+	world_xz = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xz;
 }
 
 float hash(vec2 p) {
@@ -77,6 +87,7 @@ void fragment() {
 	float grain = mix(0.5, hash(floor(m * 40.0)), fine);
 	vec3 col;
 	float rough = 1.0;
+	float specular = 0.35;
 	float hw = v_half;
 	float out_m = abs(m.x) - hw;
 	float walk = m.x < 0.0 ? v_walk.x : v_walk.y;
@@ -160,14 +171,26 @@ void fragment() {
 		col *= 1.0 - 0.25 * joint;
 		rough = 0.92;
 	} else {
-		// Accotement : gravier tassé près du bitume, puis herbe.
+		// Accotement : gravier tassé près du bitume (pas après un trottoir),
+		// puis le sol du bord de route, le même que celui du relief qui le
+		// prolonge.
 		float v = walk > 0.05 ? out_m - walk : out_m;
 		float n = fbm(m * 1.3);
-		float g = smoothstep(0.25, 0.9, v + (n - 0.5) * 0.8);
-		col = mix(gravel * (0.85 + 0.3 * n), grass * (0.8 + 0.4 * fbm(m * 0.6 + 7.0)), g);
-		col *= 0.9 + 0.2 * mix(0.5, hash(floor(m * 25.0)), fine);
+		float g = walk > 0.05 ? 1.0 : smoothstep(0.25, 0.9, v + (n - 0.5) * 0.8);
+		vec3 shoulder = gravel * (0.85 + 0.3 * n) * (0.9 + 0.2 * mix(0.5, hash(floor(m * 25.0)), fine));
+		if (v_ground.a > 0.5) {
+			float fine_w = 1.0 - smoothstep(0.02, 0.12, length(fwidth(world_xz)));
+			GroundSample s = ground_sample(world_xz, v_ground.rgb, fine_w);
+			col = mix(shoulder, s.col, g);
+			rough = mix(1.0, s.rough, g);
+			specular = mix(0.35, 0.15, g);
+			NORMAL = normalize(mix(NORMAL, g_bump(NORMAL, VERTEX, s.h * fine_w), g));
+		} else {
+			// Décor simplifié : herbe unie, comme son sol.
+			col = mix(shoulder, grass * (0.8 + 0.4 * fbm(m * 0.6 + 7.0)), g);
+		}
 	}
 	ALBEDO = col;
 	ROUGHNESS = rough;
-	SPECULAR = 0.35;
+	SPECULAR = specular;
 }

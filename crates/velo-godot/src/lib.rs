@@ -116,7 +116,8 @@ fn array_mesh(m: &MeshData) -> Option<Gd<ArrayMesh>> {
         v.iter().map(|p| Vector3::new(p[0], p[1], p[2])).collect()
     };
     let mut arrays = VarArray::new();
-    // Mesh.ARRAY_MAX = 13 ; 0 sommets, 1 normales, 3 couleurs, 4 UV, 5 UV2, 12 indices.
+    // Mesh.ARRAY_MAX = 13 ; 0 sommets, 1 normales, 3 couleurs, 4 UV, 5 UV2,
+    // 6 CUSTOM0 (octets RGBA, le format par défaut), 12 indices.
     arrays.resize(13, &Variant::nil());
     arrays.set(0, &to_v3(&m.positions).to_variant());
     arrays.set(1, &to_v3(&m.normals).to_variant());
@@ -135,6 +136,10 @@ fn array_mesh(m: &MeshData) -> Option<Gd<ArrayMesh>> {
     if !m.uv2s.is_empty() {
         let uv: PackedVector2Array = m.uv2s.iter().map(|u| Vector2::new(u[0], u[1])).collect();
         arrays.set(5, &uv.to_variant());
+    }
+    if !m.customs.is_empty() {
+        let bytes: Vec<u8> = m.customs.iter().flatten().copied().collect();
+        arrays.set(6, &PackedByteArray::from(bytes.as_slice()).to_variant());
     }
     arrays.set(
         12,
@@ -434,7 +439,11 @@ impl VeloRide {
             .as_ref()
             .map_or_else(Vec::new, |p| p.meshes(base, 200.0));
         if let Some(s) = &self.streamer {
-            meshes.extend(s.world().net.meshes(base));
+            let world = s.world();
+            meshes.extend(world.net.meshes(base));
+            for m in &mut meshes {
+                world.paint_ground(m);
+            }
         }
         for m in meshes {
             if let Some(mesh) = array_mesh(&m) {
@@ -450,6 +459,20 @@ impl VeloRide {
         let mut out = VarArray::new();
         if let Some(s) = &self.streamer {
             for m in s.world().net.wall_meshes(base) {
+                if let Some(mesh) = array_mesh(&m) {
+                    out.push(&mesh.to_variant());
+                }
+            }
+        }
+        out
+    }
+
+    /// Falaises sculptées le long des talus rocheux du décor réel.
+    #[func]
+    fn road_cliffs(&self, base: f64) -> VarArray {
+        let mut out = VarArray::new();
+        if let Some(s) = &self.streamer {
+            for m in s.world().net.cliff_meshes(base) {
                 if let Some(mesh) = array_mesh(&m) {
                     out.push(&mesh.to_variant());
                 }
@@ -567,6 +590,9 @@ impl VeloRide {
             }
             if let Some(t) = texture(&detail.texture) {
                 d.set("texture", &t.to_variant());
+            }
+            if let Some(t) = texture(&detail.ground) {
+                d.set("ground", &t.to_variant());
             }
             d.set(
                 "tree_cells",

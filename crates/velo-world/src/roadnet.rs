@@ -38,6 +38,13 @@ const WALL_DEPTH: f64 = WALL_FLAT + 4.0;
 /// Fondu court du relief au-delà d'un mur ou d'un parapet (m) : talus raide,
 /// rocheux, plutôt qu'une longue pente douce.
 const WALL_BLEND: f64 = 8.0;
+/// Replat au pied d'une falaise, au-delà de l'accotement (m) : la paroi
+/// sculptée se dresse devant le talus du relief, qui ne la traverse pas.
+const CLIFF_FLAT: f64 = 3.0;
+/// Fruit de la paroi : recul par mètre de hauteur.
+const CLIFF_BATTER: f64 = 0.14;
+/// Écart vertical entre deux rangées de sommets de la paroi (m).
+const CLIFF_ROW: f64 = 0.5;
 
 /// Index spatial simple : identifiants rangés par case carrée.
 #[derive(Debug, Clone, Default)]
@@ -394,6 +401,24 @@ pub struct WallPoint {
     pub s: f64,
 }
 
+/// Falaise sculptée le long du parcours, côté montagne : une paroi
+/// rocheuse en relief (strates, surplombs, ravines) devant le talus du sol,
+/// coiffée d'un rebord qui s'enfonce dans le relief.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Cliff {
+    /// Colonnes de sommets du pied vers le haut puis le long du rebord
+    /// (x, altitude absolue, n), toutes du même nombre de points.
+    pub columns: Vec<Vec<[f64; 3]>>,
+    /// Abscisse le long du parcours de chaque colonne (m).
+    pub s: Vec<f64>,
+    /// Hauteur au-dessus du pied de chaque point d'une colonne (m).
+    pub heights: Vec<Vec<f64>>,
+    /// Nombre de rangées de la paroi ; les suivantes forment le rebord.
+    pub face_rows: usize,
+    /// Vecteur unitaire de la route vers la paroi, par colonne.
+    pub out: Vec<(f64, f64)>,
+}
+
 /// Route OSM dessinée drapée sur le sol, hors du parcours, des amorces et
 /// des ronds-points.
 #[derive(Debug, Clone)]
@@ -423,6 +448,7 @@ pub struct RoadNetwork {
     /// Le reste des routes OSM, à draper sur le sol.
     pub ribbons: Vec<Ribbon>,
     pub walls: Vec<Wall>,
+    pub cliffs: Vec<Cliff>,
     pub flat: Flatten,
     pub samples: SampleIndex,
 }
@@ -1510,7 +1536,7 @@ pub fn build(
                     fp.blend[side] = WALL_BLEND;
                 }
                 Steep::Cliff => {
-                    fp.flat[side] = pr.reach(side) + 2.0;
+                    fp.flat[side] = pr.reach(side) + CLIFF_FLAT;
                     fp.blend[side] = WALL_BLEND;
                 }
                 Steep::No => {}
@@ -1641,13 +1667,15 @@ pub fn build(
         flat.add(p);
     }
 
-    // 9. Les murs, une fois le relief aplani connu.
+    // 9. Les murs et les falaises, une fois le relief aplani connu.
     let walls = build_walls(&path, &sides, &flat, dem);
+    let cliffs = build_cliffs(&path, &sides, &flat, dem);
     let net = RoadNetwork {
         stubs,
         roundabouts: rings,
         ribbons,
         walls,
+        cliffs,
         flat,
         samples,
     };
@@ -1811,6 +1839,132 @@ fn build_walls(
     walls
 }
 
+/// Relief de la paroi d'une falaise (m, positif vers la route) à
+/// l'abscisse `s` et à la hauteur `h` : strates inclinées en corniches,
+/// bombements, ravines verticales et blocs.
+fn cliff_relief(s: f64, h: f64, seed: f64) -> f64 {
+    use crate::raster::noise;
+    let tilted = h + 0.07 * s + 1.5 * noise(s * 0.02 + seed, 3.0);
+    let layer = 1.7 + 0.6 * noise(s * 0.01 + seed, 9.0);
+    let f = (tilted / layer).rem_euclid(1.0);
+    let ledge = 0.4 * smoothstep(0.0, 0.2, f) * (1.0 - smoothstep(0.7, 1.0, f));
+    let bulge = (noise(s * 0.06 + seed, h * 0.08) * 0.65 + noise(s * 0.17, h * 0.2 + seed) * 0.35
+        - 0.5)
+        * 2.0;
+    let g = (s / 9.0 + 0.3 * noise(h * 0.1, seed)).rem_euclid(1.0) - 0.5;
+    let gully = -0.9 * (-(g / 0.07).powi(2)).exp();
+    let blocks = 0.3 * (noise(s * 0.6 + seed, h * 0.6) - 0.5);
+    (ledge + bulge + gully + blocks).clamp(-1.0, 1.3)
+}
+
+/// Falaises sculptées le long des talus « Cliff » : la paroi part du replat
+/// au pied, monte presque d'aplomb jusqu'au haut du talus, et son rebord
+/// rejoint le relief en s'y enfonçant.
+fn build_cliffs(
+    path: &RoadPath,
+    sides: &[Vec<Steep>; 2],
+    flat: &Flatten,
+    dem: &dyn Fn(f64, f64) -> f64,
+) -> Vec<Cliff> {
+    let mut cliffs = Vec::new();
+    for (side, kinds) in sides.iter().enumerate() {
+        let sg = if side == 0 { -1.0 } else { 1.0 };
+        let mut k = 0;
+        while k < kinds.len() {
+            if kinds[k] != Steep::Cliff {
+                k += 1;
+                continue;
+            }
+            let a = k;
+            while k < kinds.len() && kinds[k] == Steep::Cliff {
+                k += 1;
+            }
+            let idx: Vec<usize> = (a..k).collect();
+            if idx.len() < 4 {
+                continue;
+            }
+            let ground = |q: (f64, f64)| flat.apply(dem(q.0, q.1), q.0, q.1);
+            // Hauteur visée : le relief au-delà du talus aplani, lissée et
+            // abaissée aux extrémités où la falaise sort de la pente.
+            let raw: Vec<f64> = idx
+                .iter()
+                .map(|&j| {
+                    let p = &path.samples[j];
+                    let (rx, rn) = p.right();
+                    let o = p.profile.reach(side) + CLIFF_FLAT + WALL_BLEND;
+                    let q = (p.x + rx * sg * o, p.n + rn * sg * o);
+                    (ground(q) - p.elevation).clamp(3.0, 30.0)
+                })
+                .collect();
+            let smooth = gaussian(&raw, 4.0);
+            let (s0, s1) = (path.samples[a].s, path.samples[k - 1].s);
+            let heights: Vec<f64> = idx
+                .iter()
+                .zip(&smooth)
+                .map(|(&j, &h)| {
+                    let s = path.samples[j].s;
+                    let end = smoothstep(0.0, 12.0, (s - s0).min(s1 - s));
+                    1.5 + (h - 1.5) * end
+                })
+                .collect();
+            let hmax = heights.iter().copied().fold(0.0, f64::max);
+            let face_rows = (hmax / CLIFF_ROW).ceil() as usize + 1;
+            let seed = (side * 37 + a) as f64 * 0.731;
+            let mut cliff = Cliff {
+                columns: Vec::new(),
+                s: Vec::new(),
+                heights: Vec::new(),
+                face_rows,
+                out: Vec::new(),
+            };
+            for (&j, &hh) in idx.iter().zip(&heights) {
+                let p = &path.samples[j];
+                let (rx, rn) = p.right();
+                let out = (rx * sg, rn * sg);
+                let reach = p.profile.reach(side);
+                let end = smoothstep(0.0, 12.0, (p.s - s0).min(s1 - p.s));
+                // Aux extrémités, le pied recule dans la pente.
+                let o0 = reach + 0.8 + (1.0 - end) * 2.5;
+                let foot = p.elevation - 0.5;
+                let mut col = Vec::with_capacity(face_rows + 4);
+                let mut hs = Vec::with_capacity(face_rows + 4);
+                let at = |o: f64, h: f64| [p.x + out.0 * o, foot + h, p.n + out.1 * o];
+                let mut top_o = o0;
+                for r in 0..face_rows {
+                    let h = hh * r as f64 / (face_rows - 1) as f64;
+                    let d =
+                        cliff_relief(p.s, h, seed) * smoothstep(0.3, 1.5, h) * (0.4 + 0.6 * end);
+                    let o = (o0 + CLIFF_BATTER * h - d).max(reach + 0.4);
+                    col.push(at(o, h));
+                    hs.push(h);
+                    top_o = o;
+                }
+                // Rebord arrondi puis talus qui s'enfonce dans le relief.
+                let back = reach + CLIFF_FLAT + WALL_BLEND + 2.5;
+                let sink = |o: f64| ground((p.x + out.0 * o, p.n + out.1 * o)) - foot;
+                for (t, lift) in [(0.12, 0.35), (0.35, 0.2), (0.65, 0.0), (1.0, -1.2)] {
+                    let o = top_o + 0.4 + (back - top_o - 0.4).max(1.0) * t;
+                    // Sous le relief s'il est plus haut : le rebord ne déborde
+                    // jamais de la pente en languette.
+                    let h = if t < 1.0 {
+                        (hh + lift).max(sink(o) - 0.3)
+                    } else {
+                        sink(o) + lift
+                    };
+                    col.push(at(o, h));
+                    hs.push(h);
+                }
+                cliff.columns.push(col);
+                cliff.heights.push(hs);
+                cliff.s.push(p.s);
+                cliff.out.push(out);
+            }
+            cliffs.push(cliff);
+        }
+    }
+    cliffs
+}
+
 impl RoadNetwork {
     /// Amorces, anneaux et îlots, regroupés par cases de 300 m pour que Godot
     /// n'affiche que ceux qui sont dans le champ.
@@ -1876,6 +2030,24 @@ impl RoadNetwork {
             let f = &w.pts[0];
             let key = ((f.x / 300.0).floor() as i64, (f.n / 300.0).floor() as i64);
             push_wall(cells.entry(key).or_default(), w, base);
+        }
+        let mut keys: Vec<_> = cells.keys().copied().collect();
+        keys.sort();
+        keys.into_iter()
+            .filter_map(|k| cells.remove(&k))
+            .filter(|m| !m.is_empty())
+            .collect()
+    }
+
+    /// Falaises sculptées, par cases de 300 m. UV : abscisse le long du
+    /// parcours et hauteur au-dessus du pied (m) ; COLOR.r : creux de la
+    /// paroi (0 saillant, 1 renfoncé), COLOR.g : 1 sur le rebord végétalisé.
+    pub fn cliff_meshes(&self, base: f64) -> Vec<MeshData> {
+        let mut cells: HashMap<(i64, i64), MeshData> = HashMap::new();
+        for c in &self.cliffs {
+            let f = c.columns[0][0];
+            let key = ((f[0] / 300.0).floor() as i64, (f[2] / 300.0).floor() as i64);
+            push_cliff(cells.entry(key).or_default(), c, base);
         }
         let mut keys: Vec<_> = cells.keys().copied().collect();
         keys.sort();
@@ -1972,6 +2144,108 @@ fn island(mesh: &mut MeshData, r: &Roundabout, base: f64) {
             };
             mesh.push_tri(a + i, b + i, a + j, normal);
             mesh.push_tri(a + j, b + i, b + j, normal);
+        }
+    }
+}
+
+/// Paroi d'une falaise en grille (colonnes × rangées), normales lissées
+/// d'après les voisins, faces tournées vers la route.
+fn push_cliff(mesh: &mut MeshData, c: &Cliff, base: f64) {
+    let cols = c.columns.len();
+    let rows = c.columns[0].len();
+    if cols < 2 || rows < 2 {
+        return;
+    }
+    let p = |i: usize, r: usize| c.columns[i][r];
+    let first = mesh.positions.len() as i32;
+    for i in 0..cols {
+        let out = c.out[i];
+        for r in 0..rows {
+            let q = p(i, r);
+            let (i0, i1) = (i.saturating_sub(1), (i + 1).min(cols - 1));
+            let (r0, r1) = (r.saturating_sub(1), (r + 1).min(rows - 1));
+            let along = [
+                p(i1, r)[0] - p(i0, r)[0],
+                p(i1, r)[1] - p(i0, r)[1],
+                p(i1, r)[2] - p(i0, r)[2],
+            ];
+            let up = [
+                p(i, r1)[0] - p(i, r0)[0],
+                p(i, r1)[1] - p(i, r0)[1],
+                p(i, r1)[2] - p(i, r0)[2],
+            ];
+            // Repère Godot (x, y, -n) ; la normale doit regarder la route.
+            let a = [along[0], along[1], -along[2]];
+            let b = [up[0], up[1], -up[2]];
+            let mut nrm = [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ];
+            if nrm[1] - nrm[0] * out.0 + nrm[2] * out.1 < 0.0 {
+                nrm = [-nrm[0], -nrm[1], -nrm[2]];
+            }
+            let l = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2])
+                .sqrt()
+                .max(1e-9);
+            mesh.positions
+                .push([q[0] as f32, (q[1] - base) as f32, -q[2] as f32]);
+            mesh.normals.push([
+                (nrm[0] / l) as f32,
+                (nrm[1] / l) as f32,
+                (nrm[2] / l) as f32,
+            ]);
+            mesh.uvs.push([c.s[i] as f32, c.heights[i][r] as f32]);
+            // Creux : recul par rapport à la moyenne des voisins.
+            let depth = |j: usize, s: usize| p(j, s)[0] * out.0 + p(j, s)[2] * out.1;
+            let around = (depth(i0, r) + depth(i1, r) + depth(i, r0) + depth(i, r1)) / 4.0;
+            let recess = ((depth(i, r) - around) * 2.0 + 0.5).clamp(0.0, 1.0);
+            let cap = if r + 3 >= rows { 1.0 } else { 0.0 };
+            mesh.colors.push([recess as f32, cap, 0.0, 1.0]);
+        }
+    }
+    // Même sens de rotation pour toute la grille (les surplombs regardent
+    // vers le bas), choisi sur une maille du pied : face vers la route.
+    let rows_i = rows as i32;
+    let m = cols / 2;
+    let g = |q: [f64; 3]| [q[0], q[1], -q[2]];
+    let (q0, q1, q2) = (g(p(m - 1, 0)), g(p(m, 0)), g(p(m - 1, 1)));
+    let (u, v) = (
+        [q1[0] - q0[0], q1[1] - q0[1], q1[2] - q0[2]],
+        [q2[0] - q0[0], q2[1] - q0[1], q2[2] - q0[2]],
+    );
+    let nrm = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    let out = c.out[m];
+    // Godot : faces avant dans le sens horaire, donc normale géométrique
+    // (sens trigonométrique) opposée à la face visible.
+    let flip = -nrm[0] * out.0 + nrm[2] * out.1 > 0.0;
+    for i in 0..cols - 1 {
+        for r in 0..rows - 1 {
+            let a = first + i as i32 * rows_i + r as i32;
+            let b = a + rows_i;
+            if flip {
+                mesh.indices
+                    .extend_from_slice(&[a, a + 1, b, a + 1, b + 1, b]);
+            } else {
+                mesh.indices
+                    .extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+            }
+        }
+    }
+    // Bouts : le profil de la première et de la dernière colonne, fermé.
+    for (i, other) in [(0, 1), (cols - 1, cols - 2)] {
+        let t = [
+            p(i, 0)[0] - p(other, 0)[0],
+            0.0,
+            -(p(i, 0)[2] - p(other, 0)[2]),
+        ];
+        let foot = first + (i * rows) as i32;
+        for r in 1..rows - 1 {
+            mesh.push_tri(foot, foot + r as i32, foot + r as i32 + 1, t);
         }
     }
 }
@@ -2326,6 +2600,40 @@ mod tests {
         // Plat : aucun mur.
         let (_, net) = build(&route, &osm, &|_, _| 500.0);
         assert!(net.walls.is_empty());
+    }
+
+    #[test]
+    fn cliffs_rise_in_front_of_the_slope() {
+        let (route, osm) = scene();
+        // Paroi à l'ouest, bien plus raide que pour un mur.
+        let x0 = osm.lines[0].points[0].0;
+        let cliff = |x: f64, _: f64| 500.0 + (x0 - x - 6.0).max(0.0) * 2.5;
+        let (path, net) = build(&route, &osm, &cliff);
+        assert!(!net.cliffs.is_empty());
+        assert!(net.walls.iter().all(|w| !w.retaining));
+        let p = path.samples.iter().find(|s| s.d > 100.0).unwrap();
+        for c in &net.cliffs {
+            let rows = c.columns[0].len();
+            assert!(c.face_rows >= 2 && rows > c.face_rows);
+            for (col, h) in c.columns.iter().zip(&c.heights) {
+                assert_eq!(col.len(), rows);
+                assert_eq!(h.len(), rows);
+                // La paroi monte, à l'ouest de la chaussée, sans la déborder.
+                assert!(h[c.face_rows - 1] >= 1.5);
+                for q in &col[..c.face_rows] {
+                    assert!(q[0] < p.x - p.profile.reach(0) + 0.5 - 0.4, "{}", q[0]);
+                }
+            }
+        }
+        let tallest = net
+            .cliffs
+            .iter()
+            .flat_map(|c| c.heights.iter().map(|h| h[c.face_rows - 1]))
+            .fold(0.0, f64::max);
+        assert!(tallest > 8.0, "{tallest}");
+        let meshes = net.cliff_meshes(500.0);
+        assert!(!meshes.is_empty());
+        assert!(meshes.iter().all(|m| m.normals.len() == m.positions.len()));
     }
 
     #[test]

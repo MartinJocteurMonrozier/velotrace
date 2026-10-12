@@ -10,7 +10,7 @@ pub const HALF_WIDTH: f64 = 3.0;
 /// Largeur de chaque accotement par défaut (m).
 pub const VERGE: f64 = 1.3;
 /// Le bord extérieur de l'accotement descend un peu pour rejoindre le sol.
-const VERGE_DROP: f64 = 0.25;
+const VERGE_DROP: f64 = 0.36;
 /// Hauteur d'une bordure de trottoir (m).
 pub const KERB: f64 = 0.14;
 /// Pas d'échantillonnage du tracé lissé (m).
