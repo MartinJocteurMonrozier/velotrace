@@ -17,3 +17,7 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 
 
+
+[autoload]
+
+App="*res://scripts/app.gd"

@@ -13,19 +13,19 @@ extends Node3D
 ##   --osm-fichier <json>   données OSM (JSON Overpass) à la place d'Overpass
 ##   --images <url>         source d'images aériennes ({z}/{x}/{y}, file:// accepté)
 ##   --aller-a <m>          démarre la sortie à cette distance (essais)
+##   --mode <libre|seance|adversaires|test>  mode d'entraînement (test par défaut avec --gpx)
+##   --seance <n>           séance prédéfinie n (mode seance)
+##   --adversaires <n>      nombre de coureurs virtuels (mode adversaires, 5 par défaut)
+##   --wkg <x>              leur rapport poids puissance (3,0 par défaut)
 
 const World := preload("res://scripts/world.gd")
 const Cyclist := preload("res://scripts/cyclist.gd")
 const Hud := preload("res://scripts/hud.gd")
+const Menu := preload("res://scripts/ui/menu.gd")
+const PauseMenu := preload("res://scripts/ui/pause_menu.gd")
+const RideDetail := preload("res://scripts/ui/ride_detail.gd")
 
-const EXAMPLES := {
-	"Alpe d'Huez depuis Le Bourg-d'Oisans (14 km)": "res://../data/alpe-d-huez.gpx",
-	"Vallée puis lacets (7,5 km)": "res://../data/exemple-lacets.gpx",
-	"Plat puis col à 7 % (8 km)": "res://../data/exemple-col.gpx",
-	"Rond-point du Bourg-d'Oisans (0,7 km)": "res://../data/exemple-rond-point.gpx",
-}
 const DECORS := ["reel", "cache", "simple"]
-const QUALITY_NAMES := ["Basse", "Moyenne", "Haute"]
 ## Échelle de rendu 3D (FSR) selon la qualité : l'interface reste nette.
 const RENDER_SCALE := [0.67, 0.85, 1.0]
 ## Délai maximal d'attente des carrés détaillés autour du départ.
@@ -42,8 +42,13 @@ const CHASE_TURN_S := 1.6
 const CHASE_RATE_S := 0.6
 const CHASE_LAG_S := 0.6
 const CHASE_MAX_LAG := 0.65
+## Les coureurs virtuels sont dessinés jusqu'à cette distance du joueur.
+const OPPONENT_SHOW_M := 400.0
+## Temps laissé pour savourer l'arrivée avant le bilan.
+const FINISH_HOLD_S := 4.0
 
 var ride: Node
+var _cfg := {}
 var _base_elev := 0.0
 var _cyclist: Node3D
 var _camera: Camera3D
@@ -53,13 +58,13 @@ var _auto_shift := true
 var _riding := false
 var _finished := false
 var _gpx_path := ""
-var _mode := "cadence"
-var _mode_value := 88.0
 var _capture_path := ""
 var _capture_after := 8.0
 var _ride_time := 0.0
 var _menu: CanvasLayer
-var _menu_status: Label
+var _pause: CanvasLayer
+var _opponents: Array[Node3D] = []
+var _finish_time := -1.0
 var _decor := "reel"
 var _quality := 1
 var _osm_file := ""
@@ -79,19 +84,35 @@ var _yaw_rate := 0.0
 
 
 func _ready() -> void:
-	# Sans import préalable par l'éditeur, Godot ne connaît pas encore l'extension.
-	if not ClassDB.class_exists("VeloRide"):
-		GDExtensionManager.load_extension("res://velotrace.gdextension")
-	if not ClassDB.class_exists("VeloRide"):
-		_show_fatal("Extension Rust absente : lance « cargo build -p velo-godot » à la racine du dépôt, puis relance.")
+	if not App.ok:
+		_show_fatal(App.error)
 		return
-	ride = ClassDB.instantiate("VeloRide")
-	add_child(ride)
+	ride = App.ride
+	_camera_mode = int(ride.profile_get("app.camera"))
+	_decor = String(ride.profile_get("app.decor"))
+	_quality = int(ride.profile_get("scenery.quality"))
+	_auto_shift = bool(ride.profile_get("app.auto_shift"))
+	_cfg = {"mode": "test", "test_rider": ride.profile_get("app.test_rider"), "test_value": ride.profile_get("app.test_value")}
 	_parse_args()
 	if _gpx_path != "":
+		if not ride.load_gpx(_gpx_path):
+			_show_fatal(ride.error_message())
+			return
 		_start()
 	else:
-		_build_menu()
+		_menu = Menu.new()
+		add_child(_menu)
+		_menu.start_ride.connect(_on_start_ride)
+
+
+func _on_start_ride(cfg: Dictionary) -> void:
+	_cfg = cfg
+	# Les réglages ont pu changer dans le menu.
+	_camera_mode = int(ride.profile_get("app.camera"))
+	_decor = String(ride.profile_get("app.decor"))
+	_quality = int(ride.profile_get("scenery.quality"))
+	_auto_shift = bool(ride.profile_get("app.auto_shift"))
+	_start()
 
 
 func _parse_args() -> void:
@@ -104,8 +125,19 @@ func _parse_args() -> void:
 			"--gpx":
 				_gpx_path = val
 			"--puissance":
-				_mode = "puissance"
-				_mode_value = val.to_float()
+				_cfg["test_rider"] = "puissance"
+				_cfg["test_value"] = val.to_float()
+			"--mode":
+				_cfg["mode"] = val
+			"--seance":
+				var presets: Array = ride.workout_presets()
+				_cfg["workout"] = presets[clampi(val.to_int(), 0, presets.size() - 1)]
+				_cfg["erg"] = true
+				_cfg["intensity"] = 1.0
+			"--adversaires":
+				_cfg["opponents"] = {"count": val.to_int(), "w_per_kg": _cfg.get("opponents", {}).get("w_per_kg", 3.0), "spread": 0.3}
+			"--wkg":
+				_cfg["opponents"] = {"count": _cfg.get("opponents", {}).get("count", 5), "w_per_kg": val.to_float(), "spread": 0.3}
 			"--accelere":
 				Engine.time_scale = val.to_float()
 			"--camera":
@@ -127,115 +159,11 @@ func _parse_args() -> void:
 		i += 2
 
 
-func _build_menu() -> void:
-	_menu = CanvasLayer.new()
-	add_child(_menu)
-	var bg := ColorRect.new()
-	bg.color = Color(0.05, 0.08, 0.12)
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_menu.add_child(bg)
-	var center := CenterContainer.new()
-	center.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_menu.add_child(center)
-	var box := VBoxContainer.new()
-	box.custom_minimum_size = Vector2(520, 0)
-	box.add_theme_constant_override("separation", 14)
-	center.add_child(box)
-	var title := Label.new()
-	title.text = "velotrace"
-	title.add_theme_font_size_override("font_size", 64)
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(title)
-	var sub := Label.new()
-	sub.text = "Roule sur ta trace GPX. Mode test : home trainer et accessoires simulés."
-	sub.autowrap_mode = TextServer.AUTOWRAP_WORD
-	sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	box.add_child(sub)
-
-	box.add_child(_section("Parcours"))
-	for name in EXAMPLES:
-		var b := Button.new()
-		b.text = name
-		b.pressed.connect(func(): _choose(EXAMPLES[name], name))
-		box.add_child(b)
-	var open := Button.new()
-	open.text = "Ouvrir un fichier GPX…"
-	open.pressed.connect(_open_dialog)
-	box.add_child(open)
-	_menu_status = Label.new()
-	_menu_status.text = "Aucun parcours choisi"
-	_menu_status.autowrap_mode = TextServer.AUTOWRAP_WORD
-	_menu_status.add_theme_color_override("font_color", Color(0.98, 0.62, 0.20))
-	box.add_child(_menu_status)
-
-	box.add_child(_section("Cycliste virtuel"))
-	var mode := OptionButton.new()
-	mode.add_item("Cadence 88 rpm, Click automatiques")
-	mode.add_item("Puissance fixe 200 W")
-	mode.item_selected.connect(func(i: int):
-		_mode = "cadence" if i == 0 else "puissance"
-		_mode_value = 88.0 if i == 0 else 200.0)
-	box.add_child(mode)
-
-	box.add_child(_section("Décor et graphismes"))
-	var decor := OptionButton.new()
-	decor.add_item("Réel : relief, images aériennes et OpenStreetMap")
-	decor.add_item("Réel sans connexion (données déjà en cache)")
-	decor.add_item("Simplifié (aucun téléchargement)")
-	decor.selected = DECORS.find(_decor)
-	decor.item_selected.connect(func(i: int): _decor = DECORS[i])
-	box.add_child(decor)
-	var quality := OptionButton.new()
-	for q in QUALITY_NAMES.size():
-		quality.add_item("Qualité %s" % QUALITY_NAMES[q].to_lower())
-	quality.selected = _quality
-	quality.item_selected.connect(func(i: int): _quality = i)
-	box.add_child(quality)
-
-	var go := Button.new()
-	go.text = "Rouler"
-	go.add_theme_font_size_override("font_size", 26)
-	go.pressed.connect(func():
-		if _gpx_path == "":
-			_menu_status.text = "Choisis d'abord un parcours."
-		else:
-			_start())
-	box.add_child(go)
-
-
-func _section(text: String) -> Label:
-	var l := Label.new()
-	l.text = text.to_upper()
-	l.add_theme_font_size_override("font_size", 13)
-	l.add_theme_color_override("font_color", Color(1, 1, 1, 0.55))
-	return l
-
-
-func _open_dialog() -> void:
-	var dialog := FileDialog.new()
-	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
-	dialog.access = FileDialog.ACCESS_FILESYSTEM
-	dialog.filters = PackedStringArray(["*.gpx ; Traces GPX"])
-	dialog.use_native_dialog = true
-	dialog.file_selected.connect(func(path: String): _choose(path, path.get_file()))
-	_menu.add_child(dialog)
-	dialog.popup_centered_ratio(0.7)
-
-
-func _choose(path: String, label: String) -> void:
-	if ride.load_gpx(path):
-		_gpx_path = path
-		_menu_status.text = "%s : %s km, D+ %d m" % [label, ("%.1f" % (ride.route_length_m() / 1000.0)).replace(".", ","), roundi(ride.route_elevation_gain_m())]
-	else:
-		_gpx_path = ""
-		_menu_status.text = ride.error_message()
-
-
 func _start() -> void:
-	if not ride.load_gpx(_gpx_path):
-		_show_fatal(ride.error_message())
-		return
+	if _cfg.get("mode") == "seance" and not _cfg.has("workout"):
+		_cfg["workout"] = ride.workout_presets()[0]
+	if _cfg.get("mode") == "adversaires" and not _cfg.has("opponents"):
+		_cfg["opponents"] = {"count": 5, "w_per_kg": 3.0, "spread": 0.3}
 	if _menu:
 		_menu.queue_free()
 		_menu = null
@@ -358,16 +286,32 @@ func _build_scene(real: bool) -> void:
 	add_child(_hud)
 	_hud.setup(ride.route_name(), ride.route_distances(), local, _base_elev)
 	_hud.set_credits(ride.world_credits() if real else "Décor simplifié")
+	_hud.setup_mode(_cfg)
 
 
 func _begin_ride() -> void:
-	ride.start_test(_mode, _mode_value)
+	# Mode test, ou pas de home trainer connecté : cycliste virtuel.
+	var simulated: bool = _cfg.get("mode") == "test" or bool(ride.profile_get("app.test_mode")) or not App.devices.has_trainer()
+	_cfg["simulated"] = simulated
+	if not ride.start_ride(_cfg):
+		_show_fatal(ride.error_message())
+		return
+	ride.set_auto_shift(_auto_shift)
 	if _skip_to > 0.0:
 		ride.skip_to(_skip_to)
+	for o in ride.opponents_state():
+		var c := Cyclist.new()
+		c.kit = _opponents.size() + 1
+		c.visible = false
+		add_child(c)
+		_opponents.append(c)
 	_riding = true
 	_place_cyclist(0.0, true)
-	if _decor_note != "":
-		_hud.show_banner("Décor simplifié")
+	var note := _decor_note
+	if simulated and _cfg.get("mode") != "test":
+		note = "Aucun home trainer connecté : cycliste virtuel"
+	if note != "":
+		_hud.show_banner(note)
 		get_tree().create_timer(3.0).timeout.connect(func(): _hud.show_banner(""))
 
 
@@ -379,6 +323,10 @@ func _process(delta: float) -> void:
 		return
 	_ride_time += delta
 	_place_cyclist(delta, false)
+	if _finish_time >= 0.0 and _pause == null:
+		_finish_time += delta
+		if _finish_time > FINISH_HOLD_S and _capture_path == "":
+			_end_ride(true)
 	if _capture_path != "" and _ride_time >= _capture_after:
 		_capture()
 
@@ -403,9 +351,33 @@ func _place_cyclist(delta: float, snap: bool) -> void:
 		# Les carrés détaillés se chargent un peu en avant du cycliste.
 		_real_world.focus = pos + Vector3(dir.x, 0.0, dir.z).normalized() * 150.0
 	_hud.update(t, delta)
+	_place_opponents(pos, delta, snap)
 	if t.finished and not _finished:
 		_finished = true
+		_finish_time = 0.0
 		_hud.show_banner("Arrivée !\n%s" % _hud._clock.text)
+
+
+## Coureurs virtuels : position, posture et classement.
+func _place_opponents(player: Vector3, delta: float, snap: bool) -> void:
+	if _opponents.is_empty():
+		return
+	var list: Array = ride.opponents_state()
+	_hud.update_opponents(list)
+	for i in mini(list.size(), _opponents.size()):
+		var o: Dictionary = list[i]
+		var c := _opponents[i]
+		var p: Vector3 = o.position - Vector3(0.0, _base_elev, 0.0)
+		c.visible = p.distance_to(player) < OPPONENT_SHOW_M
+		if not c.visible:
+			continue
+		var dir: Vector3 = o.direction
+		if dir.length() < 0.01:
+			dir = Vector3.FORWARD
+		var basis := Basis.looking_at(dir.normalized(), Vector3.UP) * Basis(Vector3(0.0, 0.0, 1.0), float(o.lean))
+		c.transform = Transform3D(basis, p + Vector3(0.0, 0.05, 0.0))
+		c.set_state(o.speed_kmh / 3.6, o.power_w, o.grade_pct / 100.0, o.rider_kg, 0.0 if snap else delta)
+		c.animate(o.speed_kmh / 3.6, o.cadence_rpm, delta)
 
 
 func _update_camera(pos: Vector3, dir: Vector3, delta: float, snap: bool) -> void:
@@ -449,7 +421,7 @@ func _update_camera(pos: Vector3, dir: Vector3, delta: float, snap: bool) -> voi
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if not _riding or not (event is InputEventKey) or not event.pressed or event.echo:
+	if not _riding or _pause != null or not (event is InputEventKey) or not event.pressed or event.echo:
 		return
 	match event.keycode:
 		KEY_UP, KEY_KP_ADD, KEY_EQUAL:
@@ -465,12 +437,64 @@ func _unhandled_input(event: InputEvent) -> void:
 			ride.set_auto_shift(_auto_shift)
 		KEY_C:
 			_camera_mode = (_camera_mode + 1) % CAMERA_MODES
-		KEY_SPACE:
-			var paused: bool = ride.is_running()
-			ride.set_paused(paused)
-			_hud.show_banner("Pause" if paused else "")
-		KEY_ESCAPE:
-			get_tree().reload_current_scene()
+		KEY_SPACE, KEY_ESCAPE, KEY_P:
+			_open_pause()
+	get_viewport().set_input_as_handled()
+
+
+## Pause : la sortie s'arrête et le menu permet d'ajuster les réglages.
+func _open_pause() -> void:
+	ride.set_paused(true)
+	_pause = PauseMenu.new()
+	add_child(_pause)
+	var state: Dictionary = ride.ride_state()
+	state["camera"] = _camera_mode
+	state["auto_shift"] = _auto_shift
+	_pause.setup(state)
+	_pause.resumed.connect(_close_pause)
+	_pause.adjusted.connect(_on_adjusted)
+	_pause.finished.connect(func(save: bool): _end_ride(save))
+
+
+func _close_pause() -> void:
+	if _pause:
+		_pause.queue_free()
+		_pause = null
+	if not _finished:
+		ride.set_paused(false)
+
+
+func _on_adjusted(key: String, value: Variant) -> void:
+	match key:
+		"camera":
+			_camera_mode = posmod(int(value), CAMERA_MODES)
+		"auto_shift":
+			_auto_shift = bool(value)
+			ride.set_auto_shift(_auto_shift)
+		_:
+			ride.adjust(key, value)
+
+
+## Fin de la sortie : enregistrement, puis bilan (ou retour direct au menu).
+func _end_ride(save: bool) -> void:
+	if not _riding:
+		return
+	_riding = false
+	if _pause:
+		_pause.queue_free()
+		_pause = null
+	var id: int = ride.finish_ride(save)
+	if not save or id < 0:
+		if save:
+			push_warning(ride.error_message())
+		get_tree().reload_current_scene()
+		return
+	App.auto_upload(id)
+	_hud.visible = false
+	var detail := RideDetail.new()
+	add_child(detail)
+	detail.setup(id, true)
+	detail.closed.connect(func(): get_tree().reload_current_scene())
 
 
 func _capture() -> void:

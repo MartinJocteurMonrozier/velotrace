@@ -14,16 +14,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use velo_core::config::Profile;
-use velo_core::devices::{DeviceHub, Shift};
-use velo_core::protocol::ControlCommand;
-use velo_core::ride::Ride;
+use velo_core::devices::{DeviceKind, RememberedDevice, Shift};
 use velo_core::route::Route;
-use velo_core::sim::{AutoShift, RiderModel, SimSettings, SimulatedDevices};
+use velo_core::sim::RiderModel;
+use velo_core::workout::Workout;
 use velo_core::terrain::Terrain;
 use velo_world::mesh::MeshData;
 use velo_world::road::RoadPath;
 use velo_world::world::Texture;
 use velo_world::{Streamer, World, WorldOptions};
+
+use devices::VeloDevices;
+use session::Session;
+
+mod devices;
+mod history;
+mod profile;
+mod session;
+mod strava;
 
 struct VeloExtension;
 
@@ -49,8 +57,9 @@ pub struct VeloRide {
     terrain: Option<Terrain>,
     /// Tracé lissé de la route et trajectoire du cycliste.
     path: Option<RoadPath>,
-    ride: Option<Ride>,
-    devices: Option<SimulatedDevices>,
+    session: Option<Session>,
+    /// Appareils Bluetooth (nœud partagé, voir `set_devices`).
+    devices: Option<Gd<VeloDevices>>,
     running: bool,
     last_error: String,
     build: Option<WorldBuild>,
@@ -61,15 +70,13 @@ pub struct VeloRide {
 #[godot_api]
 impl INode for VeloRide {
     fn init(base: Base<Node>) -> Self {
-        let mut profile = Profile::martin();
-        profile.app.test_mode = true;
         Self {
             base,
-            profile,
+            profile: profile::load(),
             route: None,
             terrain: None,
             path: None,
-            ride: None,
+            session: None,
             devices: None,
             running: false,
             last_error: String::new(),
@@ -83,18 +90,14 @@ impl INode for VeloRide {
         if !self.running {
             return;
         }
-        let (Some(ride), Some(devices)) = (self.ride.as_mut(), self.devices.as_mut()) else {
+        let Some(session) = self.session.as_mut() else {
             return;
         };
         let mut remaining = delta;
         while remaining > 1e-6 {
             let dt = remaining.min(MAX_STEP_S);
             remaining -= dt;
-            for event in devices.poll(dt) {
-                ride.handle(&event);
-            }
-            let t = ride.step(dt);
-            devices.send(ride.trainer_command());
+            let t = session.step(dt);
             if t.finished {
                 self.running = false;
                 break;
@@ -233,7 +236,7 @@ impl VeloRide {
                 self.terrain = Some(Terrain::new(&route));
                 self.path = Some(RoadPath::new(&route));
                 self.route = Some(route);
-                self.ride = None;
+                self.session = None;
                 self.running = false;
                 true
             }
@@ -241,6 +244,90 @@ impl VeloRide {
                 self.last_error = e;
                 false
             }
+        }
+    }
+
+    #[func]
+    fn has_route(&self) -> bool {
+        self.route.is_some()
+    }
+
+    /// Valeur d'un champ du profil (« rider.weight_kg », « bike.cassette »…).
+    #[func]
+    fn profile_get(&self, key: GString) -> Variant {
+        profile::get(&self.profile, &key.to_string())
+    }
+
+    /// Modifie un champ du profil (en mémoire) ; `false` si la valeur est
+    /// refusée, la raison est alors donnée par `error_message()`.
+    #[func]
+    fn profile_set(&mut self, key: GString, value: Variant) -> bool {
+        match profile::set(&self.profile, &key.to_string(), &value) {
+            Ok(p) => {
+                self.profile = p;
+                true
+            }
+            Err(e) => {
+                self.last_error = e;
+                false
+            }
+        }
+    }
+
+    /// Enregistre le profil sur disque.
+    #[func]
+    fn profile_save(&mut self) -> bool {
+        match profile::save(&self.profile) {
+            Ok(()) => true,
+            Err(e) => {
+                self.last_error = format!("profil non enregistré : {e}");
+                false
+            }
+        }
+    }
+
+    #[func]
+    fn profile_reload(&mut self) {
+        self.profile = profile::load();
+    }
+
+    #[func]
+    fn profile_path(&self) -> GString {
+        GString::from(profile::path().to_string_lossy().as_ref())
+    }
+
+    /// Appareils appairés : `{id, name, kind}`.
+    #[func]
+    fn remembered_devices(&self) -> VarArray {
+        let mut out = VarArray::new();
+        for d in &self.profile.devices {
+            let mut x = VarDictionary::new();
+            x.set("id", d.id.as_str());
+            x.set("name", d.name.as_str());
+            x.set("kind", d.kind.key());
+            out.push(&x.to_variant());
+        }
+        out
+    }
+
+    /// Mémorise l'appareil d'un rôle (il remplace le précédent).
+    #[func]
+    fn remember_device(&mut self, id: GString, name: GString, kind: GString) {
+        let Some(kind) = DeviceKind::from_key(&kind.to_string()) else {
+            return;
+        };
+        self.profile.devices.retain(|d| d.kind != kind);
+        self.profile.devices.push(RememberedDevice {
+            id: id.to_string(),
+            name: name.to_string(),
+            kind,
+        });
+    }
+
+    #[func]
+    fn forget_device(&mut self, kind: GString) {
+        if let Some(kind) = DeviceKind::from_key(&kind.to_string()) {
+            self.profile.devices.retain(|d| d.kind != kind);
         }
     }
 
@@ -689,49 +776,49 @@ impl VeloRide {
         out
     }
 
-    /// Démarre une sortie en mode test. `mode` vaut « cadence » (Click
-    /// automatiques, la puissance dépend du rapport) ou « puissance ».
+    /// Nœud des appareils Bluetooth, utilisé quand la sortie n'est pas simulée.
     #[func]
-    fn start_test(&mut self, mode: GString, value: f64) -> bool {
+    fn set_devices(&mut self, devices: Gd<VeloDevices>) {
+        self.devices = Some(devices);
+    }
+
+    /// Démarre une sortie. `cfg` : `mode` (« libre », « seance »,
+    /// « adversaires », « test »), `simulated` (cycliste virtuel au lieu du
+    /// matériel), `test_rider` et `test_value`, `workout`, `erg`, `intensity`,
+    /// `opponents` (`count`, `w_per_kg`, `spread`).
+    #[func]
+    fn start_ride(&mut self, cfg: VarDictionary) -> bool {
         let Some(route) = self.route.clone() else {
             self.last_error = "aucun parcours chargé".into();
             return false;
         };
-        let mut settings = SimSettings::default();
-        if mode == "puissance" {
-            settings.rider = RiderModel::Power {
-                watts: value,
-                cadence_rpm: 88.0,
-            };
-            settings.auto_shift = None;
-        } else {
-            settings.rider = RiderModel::Cadence { rpm: value };
-            settings.auto_shift = Some(AutoShift {
-                min_w: 150.0,
-                max_w: 260.0,
-                interval_s: 2.0,
-            });
+        match Session::start(&self.profile, route, &cfg, self.devices.clone()) {
+            Ok(s) => {
+                self.session = Some(s);
+                self.running = true;
+                true
+            }
+            Err(e) => {
+                self.last_error = e;
+                false
+            }
         }
-        let mut devices = SimulatedDevices::new(&self.profile, settings);
-        devices.send(ControlCommand::RequestControl);
-        devices.send(ControlCommand::StartOrResume);
-        self.ride = Some(Ride::new(self.profile.clone(), route));
-        self.devices = Some(devices);
-        self.running = true;
-        true
     }
 
     /// Avance directement à une distance du parcours (essais).
     #[func]
     fn skip_to(&mut self, distance_m: f64) {
-        if let Some(r) = self.ride.as_mut() {
-            r.skip_to(distance_m);
+        if let Some(s) = self.session.as_mut() {
+            s.ride.skip_to(distance_m);
+            if let Some(p) = s.pack.as_mut() {
+                p.skip_to(distance_m);
+            }
         }
     }
 
     #[func]
     fn set_paused(&mut self, paused: bool) {
-        if self.ride.as_ref().is_some_and(|r| !r.finished()) {
+        if self.session.as_ref().is_some_and(|s| !s.ride.finished()) {
             self.running = !paused;
         }
     }
@@ -741,46 +828,272 @@ impl VeloRide {
         self.running
     }
 
-    /// Appui sur un Click (clavier en mode test).
+    /// Appui sur un Click (clavier).
     #[func]
     fn shift_up(&mut self) {
-        if let Some(d) = self.devices.as_mut() {
-            d.press(Shift::Up);
+        if let Some(s) = self.session.as_mut() {
+            s.shift(Shift::Up);
         }
     }
 
     #[func]
     fn shift_down(&mut self) {
-        if let Some(d) = self.devices.as_mut() {
-            d.press(Shift::Down);
+        if let Some(s) = self.session.as_mut() {
+            s.shift(Shift::Down);
         }
     }
 
     /// Active ou coupe les Click automatiques du cycliste virtuel.
     #[func]
     fn set_auto_shift(&mut self, enabled: bool) {
-        if let Some(d) = self.devices.as_mut() {
-            d.settings.auto_shift = enabled.then_some(AutoShift {
-                min_w: 150.0,
-                max_w: 260.0,
-                interval_s: 2.0,
-            });
+        if let Some(d) = self.session.as_mut().and_then(|s| s.sim_mut()) {
+            d.settings.auto_shift = enabled.then_some(session::AUTO_SHIFT);
         }
     }
 
     /// Ajuste la consigne du cycliste virtuel (watts ou rpm selon le mode).
     #[func]
     fn adjust_rider(&mut self, delta: f64) {
-        if let Some(d) = self.devices.as_mut() {
-            d.settings.rider = match d.settings.rider {
-                RiderModel::Power { watts, cadence_rpm } => RiderModel::Power {
-                    watts: (watts + delta).clamp(0.0, 1500.0),
-                    cadence_rpm,
-                },
-                RiderModel::Cadence { rpm } => RiderModel::Cadence {
-                    rpm: (rpm + delta / 5.0).clamp(40.0, 130.0),
-                },
-            };
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        s.sim_rider = match s.sim_rider {
+            RiderModel::Power { watts, cadence_rpm } => RiderModel::Power {
+                watts: (watts + delta).clamp(0.0, 1500.0),
+                cadence_rpm,
+            },
+            RiderModel::Cadence { rpm } => RiderModel::Cadence {
+                rpm: (rpm + delta / 5.0).clamp(40.0, 130.0),
+            },
+        };
+        let rider = s.sim_rider;
+        if s.workout.is_none() {
+            if let Some(d) = s.sim_mut() {
+                d.settings.rider = rider;
+            }
+        }
+    }
+
+    /// Réglage changé dans le menu pause : `grade_difficulty` (fraction),
+    /// `rider_kg`, `erg`, `intensity` (fraction), `skip_step`, `w_per_kg`
+    /// (coureurs virtuels), `test_value` (watts ou rpm du cycliste virtuel).
+    #[func]
+    fn adjust(&mut self, key: GString, value: Variant) {
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        let num = value
+            .try_to::<f64>()
+            .ok()
+            .or_else(|| value.try_to::<i64>().ok().map(|i| i as f64));
+        match (key.to_string().as_str(), num) {
+            ("grade_difficulty", Some(v)) => {
+                let v = v.clamp(0.0, 1.0);
+                s.ride.set_grade_difficulty(v);
+                self.profile.trainer.grade_difficulty = v;
+            }
+            ("rider_kg", Some(v)) => {
+                let v = v.clamp(25.0, 200.0);
+                s.ride.set_rider_weight(v);
+                self.profile.rider.weight_kg = v;
+            }
+            ("intensity", Some(v)) => {
+                if let Some(w) = s.workout.as_mut() {
+                    w.intensity = v.clamp(0.3, 2.0);
+                }
+            }
+            ("w_per_kg", Some(v)) => {
+                if let Some(p) = s.pack.as_mut() {
+                    p.set_all_w_per_kg(v.clamp(0.5, 8.0));
+                }
+            }
+            ("test_value", Some(v)) => {
+                s.sim_rider = match s.sim_rider {
+                    RiderModel::Power { cadence_rpm, .. } => RiderModel::Power {
+                        watts: v.clamp(0.0, 1500.0),
+                        cadence_rpm,
+                    },
+                    RiderModel::Cadence { .. } => RiderModel::Cadence {
+                        rpm: v.clamp(40.0, 130.0),
+                    },
+                };
+                let rider = s.sim_rider;
+                if s.workout.is_none() {
+                    if let Some(d) = s.sim_mut() {
+                        d.settings.rider = rider;
+                    }
+                }
+            }
+            ("erg", _) => {
+                if let (Some(w), Ok(b)) = (s.workout.as_mut(), value.try_to::<bool>()) {
+                    w.erg = b;
+                }
+            }
+            ("skip_step", _) => {
+                if let Some(w) = s.workout.as_mut() {
+                    w.skip_step();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Réglages courants de la sortie, pour le menu pause.
+    #[func]
+    fn ride_state(&self) -> VarDictionary {
+        let mut d = VarDictionary::new();
+        let Some(s) = &self.session else {
+            return d;
+        };
+        d.set("mode", s.mode.key());
+        d.set("simulated", s.simulated());
+        d.set("grade_difficulty", s.ride.profile.trainer.grade_difficulty);
+        d.set("rider_kg", s.ride.profile.rider.weight_kg);
+        if let Some(w) = &s.workout {
+            let st = w.state();
+            d.set("erg", w.erg);
+            d.set("intensity", w.intensity);
+            d.set("workout_name", w.workout.name.as_str());
+            d.set("step_index", st.step_index as i64);
+            d.set("step_count", st.step_count as i64);
+        }
+        if let Some(p) = &s.pack {
+            let n = p.opponents.len().max(1) as f64;
+            d.set(
+                "w_per_kg",
+                p.opponents.iter().map(|o| o.w_per_kg).sum::<f64>() / n,
+            );
+        }
+        match s.sim_rider {
+            RiderModel::Power { watts, .. } => {
+                d.set("test_rider", "puissance");
+                d.set("test_value", watts);
+            }
+            RiderModel::Cadence { rpm } => {
+                d.set("test_rider", "cadence");
+                d.set("test_value", rpm);
+            }
+        }
+        d
+    }
+
+    /// Séances prédéfinies (voir `session::workout_to_dict` pour la forme).
+    #[func]
+    fn workout_presets(&self) -> VarArray {
+        let mut out = VarArray::new();
+        for w in Workout::presets() {
+            out.push(&session::workout_to_dict(&w).to_variant());
+        }
+        out
+    }
+
+    /// Importe une séance Zwift (.zwo) ; dictionnaire vide en cas d'erreur.
+    #[func]
+    fn workout_from_zwo(&mut self, path: GString) -> VarDictionary {
+        let real = ProjectSettings::singleton()
+            .globalize_path(&path)
+            .to_string();
+        let result = std::fs::read_to_string(&real)
+            .map_err(|e| format!("impossible d'ouvrir « {real} » : {e}"))
+            .and_then(|t| Workout::from_zwo(&t).map_err(|e| e.to_string()));
+        match result {
+            Ok(w) => session::workout_to_dict(&w),
+            Err(e) => {
+                self.last_error = e;
+                VarDictionary::new()
+            }
+        }
+    }
+
+    /// Coureurs virtuels : nom, écart au joueur (m, positif devant), W/kg,
+    /// puissance, vitesse, cadence, position et cap en coordonnées Godot.
+    #[func]
+    fn opponents_state(&self) -> VarArray {
+        let mut out = VarArray::new();
+        let Some(s) = &self.session else {
+            return out;
+        };
+        let Some(pack) = &s.pack else {
+            return out;
+        };
+        let me = s.ride.telemetry().distance_m;
+        for (i, o) in pack.opponents.iter().enumerate() {
+            let mut d = VarDictionary::new();
+            d.set("name", o.name.as_str());
+            d.set("distance_m", o.distance_m);
+            d.set("gap_m", o.distance_m - me);
+            d.set("w_per_kg", o.w_per_kg);
+            d.set("rider_kg", o.rider_kg);
+            d.set("power_w", o.power_w);
+            d.set("speed_kmh", o.speed_ms * 3.6);
+            d.set("cadence_rpm", o.cadence_rpm);
+            d.set("finished", o.finished);
+            d.set("grade_pct", s.ride.route.grade_at(o.distance_m) * 100.0);
+            // Chacun sa place dans la largeur de la route, surtout à gauche du joueur.
+            const LANES: [f64; 8] = [-0.9, 0.35, -1.7, -0.35, -1.25, 0.2, -2.1, -0.6];
+            let lane = LANES[i % LANES.len()];
+            match &self.path {
+                Some(p) => {
+                    let pose = p.rider_at(o.distance_m);
+                    let (hx, hn) = pose.heading;
+                    let l = hx.hypot(hn).max(1e-9);
+                    let (rx, rn) = (hn / l, -hx / l);
+                    let ahead = s.ride.route.point_at(o.distance_m + 4.0);
+                    let behind = s.ride.route.point_at(o.distance_m - 4.0);
+                    let slope = (ahead.elevation_m - behind.elevation_m) / 8.0;
+                    d.set(
+                        "position",
+                        v3(pose.x + rx * lane, pose.elevation, -(pose.n + rn * lane)),
+                    );
+                    d.set("direction", v3(hx, slope, -hn));
+                    let lean = (o.speed_ms * o.speed_ms * pose.curvature / 9.81).atan();
+                    d.set("lean", lean.clamp(-0.7, 0.7));
+                }
+                None => {
+                    let here = s.ride.route.point_at(o.distance_m);
+                    let ahead = s.ride.route.point_at(o.distance_m + 4.0);
+                    let behind = s.ride.route.point_at(o.distance_m - 4.0);
+                    d.set("position", v3(here.x, here.elevation_m, -here.y));
+                    d.set(
+                        "direction",
+                        v3(
+                            ahead.x - behind.x,
+                            ahead.elevation_m - behind.elevation_m,
+                            -(ahead.y - behind.y),
+                        ),
+                    );
+                    d.set("lean", 0.0);
+                }
+            }
+            out.push(&d.to_variant());
+        }
+        out
+    }
+
+    /// Termine la sortie : le home trainer revient à plat, puis la sortie est
+    /// enregistrée dans l'historique si `save`. Renvoie son identifiant (−1
+    /// sans enregistrement ou en cas d'erreur, voir `error_message()`).
+    #[func]
+    fn finish_ride(&mut self, save: bool) -> i64 {
+        self.running = false;
+        let Some(mut s) = self.session.take() else {
+            return -1;
+        };
+        s.finish();
+        if !save {
+            return -1;
+        }
+        let route_name = self
+            .route
+            .as_ref()
+            .and_then(|r| r.name.clone())
+            .unwrap_or_else(|| "Parcours".into());
+        match history::save_session(&s, &self.profile, &route_name) {
+            Ok(id) => id,
+            Err(e) => {
+                self.last_error = e;
+                -1
+            }
         }
     }
 
@@ -788,9 +1101,10 @@ impl VeloRide {
     #[func]
     fn telemetry(&self) -> VarDictionary {
         let mut d = VarDictionary::new();
-        let Some(ride) = &self.ride else {
+        let Some(session) = &self.session else {
             return d;
         };
+        let ride = &session.ride;
         let t = ride.telemetry();
         let here = ride.route.point_at(t.distance_m);
         let ahead = ride.route.point_at(t.distance_m + 4.0);
@@ -841,6 +1155,25 @@ impl VeloRide {
             }
         }
         d.set("finished", t.finished);
+        d.set("mode", session.mode.key());
+        if let Some(w) = &session.workout {
+            let st = w.state();
+            let mut x = VarDictionary::new();
+            x.set("name", w.workout.name.as_str());
+            x.set("step_index", st.step_index as i64);
+            x.set("step_count", st.step_count as i64);
+            x.set("step_elapsed_s", st.step_elapsed_s);
+            x.set("step_remaining_s", st.step_remaining_s);
+            x.set("target_w", st.target_w.unwrap_or(-1.0));
+            x.set("next_target_w", st.next_target_w.unwrap_or(-1.0));
+            x.set("cadence_rpm", st.cadence_rpm.unwrap_or(0.0));
+            x.set("total_elapsed_s", st.total_elapsed_s);
+            x.set("total_s", st.total_s);
+            x.set("erg", w.erg);
+            x.set("intensity", w.intensity);
+            x.set("finished", w.finished());
+            d.set("workout", &x);
+        }
         d
     }
 }

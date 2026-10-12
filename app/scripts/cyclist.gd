@@ -99,7 +99,6 @@ const STAND_TOE := 0.14
 const GROUND_Y := -0.05
 const SOLE_TO_ANKLE := 0.093
 
-const FRAME_RED := Color(0.72, 0.04, 0.06)
 const WHITE := Color(0.93, 0.93, 0.95)
 const CARBON := Color(0.045, 0.045, 0.05)
 const TAPE := Color(0.05, 0.05, 0.055)
@@ -108,15 +107,35 @@ const STEEL := Color(0.36, 0.36, 0.38)
 const DARK_METAL := Color(0.14, 0.14, 0.15)
 const TREAD := Color(0.06, 0.06, 0.06)
 const GUM := Color(0.6, 0.43, 0.26)
-const JERSEY := Color(0.06, 0.26, 0.70)
-const JERSEY_DARK := Color(0.03, 0.12, 0.38)
-const ACCENT := Color(0.86, 0.07, 0.09)
+## Tenues et cadres : la première est celle du joueur, les suivantes celles
+## des coureurs virtuels (maillot, maillot foncé, liseré, cadre).
+const KITS := [
+	[Color(0.06, 0.26, 0.70), Color(0.03, 0.12, 0.38), Color(0.86, 0.07, 0.09), Color(0.72, 0.04, 0.06)],
+	[Color(0.05, 0.50, 0.24), Color(0.02, 0.24, 0.11), Color(0.95, 0.95, 0.95), Color(0.06, 0.06, 0.07)],
+	[Color(0.95, 0.78, 0.05), Color(0.10, 0.10, 0.10), Color(0.10, 0.10, 0.10), Color(0.92, 0.92, 0.94)],
+	[Color(0.80, 0.08, 0.10), Color(0.40, 0.03, 0.05), Color(0.95, 0.95, 0.95), Color(0.06, 0.06, 0.07)],
+	[Color(0.92, 0.92, 0.94), Color(0.12, 0.12, 0.14), Color(0.05, 0.40, 0.75), Color(0.05, 0.25, 0.55)],
+	[Color(0.95, 0.45, 0.06), Color(0.05, 0.10, 0.25), Color(0.05, 0.10, 0.25), Color(0.95, 0.45, 0.06)],
+	[Color(0.02, 0.55, 0.60), Color(0.01, 0.25, 0.30), Color(0.98, 0.85, 0.20), Color(0.92, 0.92, 0.94)],
+	[Color(0.42, 0.12, 0.62), Color(0.18, 0.05, 0.30), Color(0.98, 0.62, 0.20), Color(0.10, 0.10, 0.12)],
+	[Color(0.98, 0.55, 0.70), Color(0.35, 0.10, 0.20), Color(0.10, 0.10, 0.10), Color(0.10, 0.10, 0.12)],
+]
 const BIB := Color(0.03, 0.03, 0.035)
 const BIB_BAND := Color(0.16, 0.16, 0.18)
 const SKIN := Color(0.84, 0.62, 0.48)
 const SOCK := Color(0.96, 0.96, 0.96)
 const LENS := Color(0.08, 0.14, 0.28)
 const HAIR := Color(0.2, 0.13, 0.08)
+
+## Tenue choisie (indice dans KITS), à fixer avant l'ajout à la scène.
+var kit := 0
+var _jersey: Color
+var _jersey_dark: Color
+var _accent: Color
+var _frame_col: Color
+
+## Maillages partagés par tous les cyclistes de même tenue.
+static var _mesh_cache := {}
 
 var _posture := Posture.ASSIS
 var _posture_time := 0.0
@@ -149,35 +168,40 @@ var _forearms: Array[MeshInstance3D] = []
 
 
 func _ready() -> void:
+	var k: Array = KITS[posmod(kit, KITS.size())]
+	_jersey = k[0]
+	_jersey_dark = k[1]
+	_accent = k[2]
+	_frame_col = k[3]
 	_bike = Node3D.new()
 	add_child(_bike)
-	_bike.add_child(_instance(_frame_mesh()))
-	var wheel := _wheel_mesh()
+	_bike.add_child(_instance(_cached("_frame_mesh", _frame_mesh)))
+	var wheel := _cached("_wheel_mesh", _wheel_mesh)
 	for f: float in [REAR_F, FRONT_F]:
 		var w := _instance(wheel)
 		w.position = _p(f, AXLE_H)
 		_bike.add_child(w)
 		_wheels.append(w)
-	_crankset = _instance(_crank_mesh())
+	_crankset = _instance(_cached("_crank_mesh", _crank_mesh))
 	_crankset.position = _p(0.0, 0.0)
 	_bike.add_child(_crankset)
-	var pedal := _pedal_mesh()
+	var pedal := _cached("_pedal_mesh", _pedal_mesh)
 	for i in 2:
 		var p := _instance(pedal)
 		_bike.add_child(p)
 		_pedals.append(p)
 
-	_torso = _instance(_torso_mesh())
-	_neck = _instance(_neck_mesh())
-	_head = _instance(_head_mesh())
+	_torso = _instance(_cached("_torso_mesh", _torso_mesh))
+	_neck = _instance(_cached("_neck_mesh", _neck_mesh))
+	_head = _instance(_cached("_head_mesh", _head_mesh))
 	add_child(_torso)
 	add_child(_neck)
 	add_child(_head)
-	var thigh := _thigh_mesh()
-	var shin := _shin_mesh()
-	var foot := _foot_mesh()
-	var upper := _upper_arm_mesh()
-	var fore := _forearm_mesh()
+	var thigh := _cached("_thigh_mesh", _thigh_mesh)
+	var shin := _cached("_shin_mesh", _shin_mesh)
+	var foot := _cached("_foot_mesh", _foot_mesh)
+	var upper := _cached("_upper_arm_mesh", _upper_arm_mesh)
+	var fore := _cached("_forearm_mesh", _forearm_mesh)
 	for i in 2:
 		_thighs.append(_instance(thigh))
 		_shins.append(_instance(shin))
@@ -188,6 +212,13 @@ func _ready() -> void:
 		for mi: MeshInstance3D in arr:
 			add_child(mi)
 	_update_pose()
+
+
+func _cached(key: String, build: Callable) -> ArrayMesh:
+	var id := "%d/%s" % [posmod(kit, KITS.size()), key]
+	if not _mesh_cache.has(id):
+		_mesh_cache[id] = build.call()
+	return _mesh_cache[id]
 
 
 ## Choisit la posture d'après la télémétrie (vitesse en m/s, puissance en W,
@@ -435,8 +466,8 @@ func _frame_mesh() -> ArrayMesh:
 	var front := Vector2(FRONT_F, AXLE_H)
 
 	# Cadre : tube supérieur incliné, tube diagonal large, haubans fins.
-	_tube(paint, _pv(ht_bot - head_axis * 0.01), _pv(ht_top + head_axis * 0.008), 0.032, 0.025, FRAME_RED, 16)
-	_tube(paint, _pv(ht_top - head_axis * 0.03), _pv(st_dir * 0.50), 0.02, 0.016, FRAME_RED, 12, 1.2)
+	_tube(paint, _pv(ht_bot - head_axis * 0.01), _pv(ht_top + head_axis * 0.008), 0.032, 0.025, _frame_col, 16)
+	_tube(paint, _pv(ht_top - head_axis * 0.03), _pv(st_dir * 0.50), 0.02, 0.016, _frame_col, 12, 1.2)
 	var dt_a := Vector2(0.015, 0.02)
 	var dt_b := ht_bot + head_axis * 0.035
 	var dt_len := (dt_b - dt_a).length()
@@ -444,21 +475,21 @@ func _frame_mesh() -> ArrayMesh:
 		func(t: float, phi: float, _r: float) -> Color:
 			# Inscription blanche sur les flancs du tube diagonal.
 			var side := absf(sin(phi)) > 0.75
-			return WHITE if side and t > dt_len * 0.3 and t < dt_len * 0.75 else FRAME_RED, 16, 0.85)
-	_tube(paint, _pv(Vector2.ZERO), _pv(st_dir * 0.53), 0.019, 0.016, FRAME_RED, 12, 1.25)
-	_tube(paint, _p(0.0, 0.0, -0.043), _p(0.0, 0.0, 0.043), 0.023, 0.023, FRAME_RED, 14)
+			return WHITE if side and t > dt_len * 0.3 and t < dt_len * 0.75 else _frame_col, 16, 0.85)
+	_tube(paint, _pv(Vector2.ZERO), _pv(st_dir * 0.53), 0.019, 0.016, _frame_col, 12, 1.25)
+	_tube(paint, _p(0.0, 0.0, -0.043), _p(0.0, 0.0, 0.043), 0.023, 0.023, _frame_col, 14)
 	for s: float in [-1.0, 1.0]:
-		_tube(paint, _p(-0.01, 0.0, s * 0.035), _pv(rear, s * 0.064), 0.013, 0.008, FRAME_RED, 8)
-		_tube(paint, _pv(st_dir * 0.47, s * 0.017), _pv(rear + Vector2(0.008, 0.012), s * 0.063), 0.0095, 0.007, FRAME_RED, 8)
+		_tube(paint, _p(-0.01, 0.0, s * 0.035), _pv(rear, s * 0.064), 0.013, 0.008, _frame_col, 8)
+		_tube(paint, _pv(st_dir * 0.47, s * 0.017), _pv(rear + Vector2(0.008, 0.012), s * 0.063), 0.0095, 0.007, _frame_col, 8)
 		# Fourche, légèrement cintrée vers l'avant.
 		var crown := ht_bot - head_axis * 0.03
 		var mid := crown.lerp(front, 0.55) + Vector2(0.012, 0.0)
 		paint.sweep(PackedVector3Array([_pv(crown, s * 0.034), _pv(mid, s * 0.046), _pv(front + Vector2(0.0, 0.01), s * 0.052)]),
-			PackedFloat32Array([0.019, 0.014, 0.009]), 10, FRAME_RED)
+			PackedFloat32Array([0.019, 0.014, 0.009]), 10, _frame_col)
 		gloss.box(Transform3D(Basis(), _pv(rear, s * 0.064)), Vector3(0.008, 0.03, 0.03), CARBON)
 		gloss.box(Transform3D(Basis(), _pv(front, s * 0.054)), Vector3(0.008, 0.025, 0.025), CARBON)
 	paint.revolve(_axis(_pv(ht_bot - head_axis * 0.03, -0.05), Vector3.RIGHT, Vector3.UP),
-		[Vector4(0.0, 0.0, 0.0, 0.0), Vector4(0.0, 0.022, 0.03, 0.0), Vector4(0.1, 0.022, 0.03, 0.0), Vector4(0.1, 0.0, 0.0, 0.0)], 10, FRAME_RED)
+		[Vector4(0.0, 0.0, 0.0, 0.0), Vector4(0.0, 0.022, 0.03, 0.0), Vector4(0.1, 0.022, 0.03, 0.0), Vector4(0.1, 0.0, 0.0, 0.0)], 10, _frame_col)
 
 	# Jeu de direction, potence, cintre.
 	var steer_top := ht_top + head_axis * 0.045
@@ -555,7 +586,7 @@ func _frame_mesh() -> ArrayMesh:
 		func(t: float, _phi: float, _r: float) -> Color:
 			if t > 0.198:
 				return CARBON
-			return JERSEY if t > 0.06 and t < 0.12 else WHITE)
+			return _jersey if t > 0.06 and t < 0.12 else WHITE)
 	return _commit([paint, matte, gloss, metal])
 
 
@@ -653,16 +684,16 @@ func _torso_mesh() -> ArrayMesh:
 		if t < 0.075:
 			return BIB
 		if t < 0.095:
-			return JERSEY_DARK
+			return _jersey_dark
 		if t > 0.54:
-			return JERSEY_DARK
+			return _jersey_dark
 		if t > 0.34 and t < 0.39:
-			return ACCENT
+			return _accent
 		if absf(cos(phi)) > 0.9 and t < 0.46:
 			return WHITE
 		if sin(phi) > 0.55 and t < 0.22:
-			return JERSEY_DARK if t < 0.205 else WHITE
-		return JERSEY)
+			return _jersey_dark if t < 0.205 else WHITE
+		return _jersey)
 	return _commit([mb])
 
 
@@ -670,7 +701,7 @@ func _neck_mesh() -> ArrayMesh:
 	var mb := Mb.new(_m_skin)
 	mb.revolve(Transform3D(), [Vector4(0.0, 0.0, 0.0, 0.0), Vector4(0.0, 0.075, 0.07, 0.0), Vector4(0.25, 0.064, 0.062, 0.0),
 		Vector4(1.0, 0.058, 0.056, 0.0), Vector4(1.0, 0.0, 0.0, 0.0)], 12, func(t: float, _phi: float, _r: float) -> Color:
-		return JERSEY_DARK if t < 0.25 else SKIN)
+		return _jersey_dark if t < 0.25 else SKIN)
 	return _commit([mb])
 
 
@@ -692,11 +723,11 @@ func _head_mesh() -> ArrayMesh:
 	gloss.revolve(Transform3D(), shell, 30, func(t: float, phi: float, _r: float) -> Color:
 		var deg := rad_to_deg(phi)
 		if deg < 8.0 or deg > 172.0:
-			return JERSEY
+			return _jersey
 		if t > -0.1 and t < 0.08 and deg > 28.0 and deg < 152.0 and fposmod(deg - 28.0, 24.0) < 8.0:
 			return CARBON
 		if absf(deg - 90.0) < 5.0:
-			return ACCENT
+			return _accent
 		return WHITE, -0.25, PI + 0.25)
 	# Lunettes enveloppantes.
 	var lens_xf := _axis(Vector3(0.0, 0.012, 0.0), Vector3.UP, Vector3.FORWARD)
@@ -732,7 +763,7 @@ func _shin_mesh() -> ArrayMesh:
 	mb.revolve(Transform3D(), rows, 14, func(t: float, _phi: float, _r: float) -> Color:
 		if t < 0.29:
 			return SKIN
-		return JERSEY if t < 0.31 else SOCK)
+		return _jersey if t < 0.31 else SOCK)
 	return _commit([mb])
 
 
@@ -751,7 +782,7 @@ func _foot_mesh() -> ArrayMesh:
 			return CARBON
 		return WHITE)
 	gloss.box(Transform3D(Basis(), Vector3(0.0, -0.093, -0.065)), Vector3(0.082, 0.008, 0.25), CARBON)
-	gloss.box(Transform3D(Basis(), Vector3(0.0, -0.1, -0.12)), Vector3(0.06, 0.008, 0.06), ACCENT)
+	gloss.box(Transform3D(Basis(), Vector3(0.0, -0.1, -0.12)), Vector3(0.06, 0.008, 0.06), _accent)
 	return _commit([gloss])
 
 
@@ -763,8 +794,8 @@ func _upper_arm_mesh() -> ArrayMesh:
 		Vector4(0.31, 0.034, 0.034, 0.0), Vector4(0.33, 0.0, 0.0, 0.0)]
 	mb.revolve(Transform3D(), rows, 12, func(t: float, _phi: float, _r: float) -> Color:
 		if t < 0.17:
-			return JERSEY
-		return ACCENT if t < 0.195 else SKIN)
+			return _jersey
+		return _accent if t < 0.195 else SKIN)
 	return _commit([mb])
 
 
