@@ -118,7 +118,7 @@ Pipeline d'import exécuté une fois par GPX, résultat mis en cache sur disque 
 - bâtiments : couleurs de murs et toits variées, fenêtres tous les 3 m dessinées par shader ; aussi présents dans les grands carrés ;
 - sol : texture de bruit superposée à l'image de près (25 à 260 m) pour masquer le flou.
 
-L'**avatar** : modèle de cycliste et de vélo libres de droits (ou réalisés sous Blender), pédalage synchronisé sur la cadence réelle avec une IK des jambes (pieds liés aux pédales), position du buste selon la pente et la vitesse. Caméras : arrière (par défaut), première personne, drone.
+L'**avatar** : cycliste et vélo construits en maillages procéduraux dans Godot (`cyclist.gd`), pédalage synchronisé sur la cadence réelle avec une IK des jambes et des bras (pieds liés aux pédales, mains aux cocottes ou en bas du cintre). Postures choisies d'après la vitesse, les W/kg et la pente, avec hystérésis et fondu d'environ une seconde : pied à terre, assis, aéro, en danseuse (sprint, montée). Caméras : proche à la MyWhoosh (par défaut, décalée vers l'extérieur des virages selon la vitesse de rotation lissée), arrière, de côté, haute.
 
 ## 6. Overlay (HUD)
 

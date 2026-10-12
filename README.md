@@ -35,6 +35,10 @@ Au menu, choisis un parcours d'exemple ou ton propre GPX, puis le cycliste virtu
 
 Pendant la sortie : ↑ et ↓ changent de vitesse (Click), A active ou coupe les Click automatiques, C change de caméra, Espace met en pause, Échap revient au menu.
 
+![En danseuse dans la montée, caméra proche](docs/captures/cycliste-danseuse.jpg)
+
+Le cycliste roule sur un vélo de route détaillé (cadre à tube incliné, cintre route, transmission, roues carbone à rayons, pneus à flancs beiges), en maillot, cuissard, chaussettes blanches, chaussures à cales, casque et lunettes. Sa position suit l'effort : pied à terre à l'arrêt, assis les mains aux cocottes, en position aéro les mains en bas du cintre sur le plat et en descente quand la puissance est élevée, en danseuse en sprint et dans les montées appuyées, le vélo balancé au rythme du pédalage. La caméra par défaut le suit de près, juste derrière, et glisse vers l'extérieur dans les virages pour le montrer un peu de côté ; C passe ensuite aux caméras arrière, de côté et haute.
+
 Pour démarrer directement sur un parcours : `godot --path app -- --gpx /chemin/vers/sortie.gpx [--puissance 220]`.
 
 ### Décor réel
