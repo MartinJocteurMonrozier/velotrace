@@ -121,6 +121,17 @@ Pipeline d'import exécuté une fois par GPX, résultat mis en cache sur disque 
 
 L'**avatar** : cycliste et vélo construits en maillages procéduraux dans Godot (`cyclist.gd`), pédalage synchronisé sur la cadence réelle avec une IK des jambes et des bras (pieds liés aux pédales, mains aux cocottes ou en bas du cintre). Postures choisies d'après la vitesse, les W/kg et la pente, avec hystérésis et fondu d'environ une seconde : pied à terre, assis, aéro, en danseuse (sprint, montée). Caméras : proche à la MyWhoosh (par défaut, décalée vers l'extérieur des virages selon la vitesse de rotation lissée), arrière, de côté, haute.
 
+## 5 bis. Application
+
+Les services vivent dans un nœud chargé automatiquement (`app/scripts/app.gd`, « App ») et survivent au retour au menu : `VeloRide` (parcours, profil, sortie en cours, décor), `VeloDevices` (`velo-ble`), `VeloStrava` (`velo-strava`) et `VeloHistory` (`velo-store`).
+
+- **Profil** : `~/.config/velotrace/profile.toml`, lu au lancement ; l'écran des paramètres lit et écrit chaque champ par son chemin TOML (`profile_get("bike.cassette")`), validé (bornes, listes triées) avant d'être accepté. Les appareils appairés y sont retenus par rôle.
+- **Écrans** (`app/scripts/ui/`) : accueil, connexions, paramètres, choix de l'entraînement, historique et bilan d'une sortie, plus le menu pause ; thème sombre construit en code (`theme.gd`), graphiques maison (`chart.gd`).
+- **Sortie** (`velo-godot/src/session.rs`) : à chaque pas, les événements des appareils (simulés ou Bluetooth) alimentent la simulation ; en séance, le lecteur (`velo_core::workout::WorkoutPlayer`) donne la consigne, envoyée au home trainer en ERG (`TargetPower`) ou seulement affichée ; les coureurs virtuels (`velo_core::opponents::Pack`) avancent avec leur propre masse, plus d'effort en montée, roue libre sous −4 %, aspiration de 0,5 à 6 m ; l'enregistreur garde un échantillon par seconde (la dernière seconde entamée comprise).
+- **Bluetooth** (`velo-ble`) : un fil dédié avec un runtime tokio ; l'application ne fait que lire des instantanés et poster des demandes, sans jamais attendre. Prise de contrôle FTMS avant la première consigne, consignes limitées à quatre par seconde (la dernière gagne), reconnexion automatique avec attente croissante, poignée de main des Click.
+- **Historique** (`velo-store`) : SQLite, échantillons compressés en colonnes (46 octets par seconde), courbe de puissance par sortie indexée par durée ; meilleures courbes par période, totaux par semaine, CTL (42 j), ATL (7 j) et TSB.
+- **Strava** (`velo-strava`) : OAuth avec retour sur un port local (`http://localhost:<port>/`), jetons dans `strava.json` (droits 0600), renouvelés au besoin ; envoi du `.FIT` (`sport_type=VirtualRide`, `trainer=1`) puis attente du traitement ; un doublon renvoie l'activité existante.
+
 ## 6. Overlay (HUD)
 
 - Haut : puissance instantanée et moyenne 3 s, W/kg, cadence, vitesse, fréquence cardiaque.

@@ -258,7 +258,10 @@ func _refresh(full: bool) -> void:
 	else:
 		UI.set_dot(_adapter_dot, UI.link_color(st))
 		var default_msg: String = {"starting": "Démarrage du Bluetooth…", "ready": "Bluetooth prêt", "scanning": "Recherche en cours…", "unavailable": "Bluetooth indisponible"}.get(st, st)
-		_adapter_label.text = msg if msg != "" else default_msg
+		# Le détail technique (erreur du système) va dans l'infobulle.
+		_adapter_label.text = msg.get_slice(" : ", 0) if msg != "" else default_msg
+		_adapter_label.tooltip_text = msg
+		_adapter_label.mouse_filter = Control.MOUSE_FILTER_PASS
 	_retry.visible = not test and st == "unavailable"
 	var scanning := st == "scanning" or _scan_left > 0.0
 	_scan.disabled = test or scanning or st == "unavailable"

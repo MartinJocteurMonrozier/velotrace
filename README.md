@@ -13,13 +13,18 @@ Architecture et plan : [docs/architecture.md](docs/architecture.md).
 - le modèle physique et le calcul de la pente envoyée au home trainer ;
 - la lecture d'un GPX, le rééchantillonnage et le lissage des pentes ;
 - l'encodage et le décodage des trames BLE FTMS, CSC et HRS ;
-- le **mode test**, qui simule le home trainer, le capteur de cadence, la FC et les Zwift Click.
+- le **mode test**, qui simule le home trainer, le capteur de cadence, la FC et les Zwift Click ;
+- les séances (mode ERG, import `.zwo`), les coureurs virtuels, l'enregistrement à 1 Hz, le bilan (NP, IF, TSS), la courbe de puissance et l'export `.FIT`.
 
-Le décor réel est construit par `velo-world` (relief, images aériennes, OpenStreetMap).
+Autour de lui :
 
-## Prototype jouable (Godot, mode test)
+- `velo-world` construit le décor réel (relief, images aériennes, OpenStreetMap) ;
+- `velo-ble` pilote le vrai matériel en Bluetooth (home trainer FTMS, cadence, FC, Zwift Click) ;
+- `velo-store` garde l'historique des sorties dans une base SQLite locale (courbes de puissance, volume, forme) ;
+- `velo-strava` relie le compte Strava (OAuth) et y envoie les sorties ;
+- `velo-godot` expose le tout à l'application Godot (`app/`).
 
-![En route vers les lacets](docs/captures/prototype-lacets.png)
+## L'application (Godot)
 
 Il faut [Godot 4.5 ou plus récent](https://godotengine.org/download) et Rust 1.94 ou plus récent (`rustup update stable`).
 
@@ -28,18 +33,46 @@ cargo build -p velo-godot          # compile l'extension Rust chargée par Godot
 godot --path app                   # ou ouvrir app/project.godot dans l'éditeur Godot et appuyer sur F5
 ```
 
-Au menu, choisis un parcours d'exemple ou ton propre GPX, puis le cycliste virtuel :
+![Écran d'accueil](docs/captures/app-accueil.jpg)
 
-- **Cadence 88 rpm, Click automatiques** : la puissance dépend du rapport et de la pente, le cycliste change de vitesse tout seul ;
-- **Puissance fixe 200 W** : ← et → ajustent la puissance.
+**Accueil** : choisis un parcours d'exemple, ouvre ton GPX ou glisse-le sur la fenêtre ; le profil, la distance et le dénivelé s'affichent, avec l'état des appareils et ta semaine. Le dernier parcours est repris au lancement suivant.
 
-Pendant la sortie : ↑ et ↓ changent de vitesse (Click), A active ou coupe les Click automatiques, C change de caméra, Espace met en pause, Échap revient au menu.
+**Connexions** : recherche Bluetooth, puis « Connecter » pour chaque rôle (home trainer FTMS, capteur de cadence, fréquence cardiaque, Zwift Click, deux Click possibles). Chaque carte affiche la mesure en direct (W et rpm, bpm, appui sur un Click), la batterie et l'état du lien ; les appareils sont retenus et reconnectés au lancement suivant. L'interrupteur **Mode test** remplace tout le matériel par des appareils simulés.
+
+**Paramètres** : cycliste (poids, FTP et zones), vélo (plateaux, cassette, roue, CdA, Crr, rendement), home trainer (rapport physique, difficulté des pentes, pentes limites), affichage et décor (caméra, décor, qualité, Click automatiques) et Strava. Tout est enregistré dans `~/.config/velotrace/profile.toml` (`%APPDATA%\velotrace\profile.toml` sous Windows).
+
+![Choix de l'entraînement : séance paramétrée](docs/captures/app-entrainement.jpg)
+
+**Entraînement**, quatre modes :
+
+- **Sortie libre** : le home trainer reproduit les pentes, tu changes de vitesse aux Click ;
+- **Séance paramétrée** : six séances prêtes (endurance, sweet spot, seuil, VO2max, pyramide, test FTP), import d'un fichier Zwift `.zwo` ou séance composée étape par étape, en % de FTP ; en mode ERG le home trainer impose la puissance, sinon la consigne s'affiche seulement ; intensité réglable de 50 à 150 % ;
+- **Contre des coureurs virtuels** : 1 à 8 coureurs au rapport poids/puissance choisi (avec un écart entre eux), qui appuient un peu plus en montée, roulent en roue libre dans les descentes raides et profitent de l'aspiration ; classement en direct ;
+- **Séance test** : le cycliste virtuel du mode test (cadence imposée et Click automatiques, ou puissance imposée).
+
+Sans home trainer connecté, les trois premiers modes roulent aussi avec le cycliste virtuel.
+
+![Séance VO2max en mode ERG](docs/captures/app-seance.jpg)
+
+![Course contre des coureurs virtuels](docs/captures/app-course.jpg)
+
+Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent l'effort du cycliste virtuel, A active ou coupe les Click automatiques, C change de caméra, Espace ou Échap met en **pause**. En pause, on ajuste la difficulté des pentes, le poids, les Click automatiques, la caméra, et selon le mode l'ERG, l'intensité et l'étape de la séance, le niveau des coureurs virtuels ou l'effort du cycliste virtuel ; puis on reprend, on termine (la sortie est enregistrée) ou on abandonne sans enregistrer.
+
+![Pause pendant une séance](docs/captures/app-pause.jpg)
+
+![Bilan de fin de sortie](docs/captures/app-bilan.jpg)
+
+**Fin de sortie** : la sortie est enregistrée à 1 Hz (position, altitude, vitesse, puissance, cadence, FC) dans une base SQLite locale (`~/.local/share/velotrace/velotrace.db`, `%APPDATA%\velotrace` sous Windows). Le bilan donne durée, distance, dénivelé, vitesses, puissances moyenne, maximale et normalisée, IF, TSS, travail, cadence et FC, la courbe de puissance de la sortie face à ta meilleure sur 90 jours, et propose l'**export .FIT** (Strava, Garmin Connect, Coros, Intervals.icu) et l'**envoi sur Strava**.
+
+**Historique** : liste des sorties, courbe de puissance record (tout, 365, 90 et 42 jours) avec FTP estimée, volume par semaine (heures, TSS), forme (CTL, ATL, TSB) et records.
+
+**Strava** : crée une application API gratuite sur [strava.com/settings/api](https://www.strava.com/settings/api) avec `localhost` comme domaine de rappel, colle son client ID et son secret dans Paramètres › Strava, puis « Se connecter à Strava » : l'autorisation se fait dans le navigateur, une fois. Les sorties partent ensuite d'un clic dans le bilan, ou automatiquement si tu le demandes.
 
 ![En danseuse dans la montée, caméra proche](docs/captures/cycliste-danseuse.jpg)
 
 Le cycliste roule sur un vélo de route détaillé (cadre à tube incliné, cintre route, transmission, roues carbone à rayons, pneus à flancs beiges), en maillot, cuissard, chaussettes blanches, chaussures à cales, casque et lunettes. Sa position suit l'effort : pied à terre à l'arrêt, assis les mains aux cocottes, en position aéro les mains en bas du cintre sur le plat et en descente quand la puissance est élevée, en danseuse en sprint et dans les montées appuyées, le vélo balancé au rythme du pédalage. La caméra par défaut le suit de près, juste derrière, et glisse vers l'extérieur dans les virages pour le montrer un peu de côté ; C passe ensuite aux caméras arrière, de côté et haute.
 
-Pour démarrer directement sur un parcours : `godot --path app -- --gpx /chemin/vers/sortie.gpx [--puissance 220]`.
+Pour démarrer directement sur un parcours, sans le menu : `godot --path app -- --gpx /chemin/vers/sortie.gpx [--puissance 220] [--mode libre|seance|adversaires|test] [--seance 2] [--adversaires 5 --wkg 3.2]`.
 
 ### Décor réel
 
