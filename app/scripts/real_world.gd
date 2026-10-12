@@ -4,11 +4,16 @@ extends Node3D
 ## chargés autour de la caméra et libérés quand on s'éloigne.
 
 const TERRAIN_SHADER := preload("res://shaders/terrain.gdshader")
+const BUILDING_SHADER := preload("res://shaders/buildings.gdshader")
+const Vegetation := preload("res://scripts/vegetation.gd")
 ## Distance de chargement des carrés détaillés selon la qualité.
 const LOAD_RADIUS := [900.0, 1200.0, 1600.0]
 ## Distance d'affichage des arbres et des bâtiments selon la qualité.
-const TREE_VIEW := [300.0, 550.0, 900.0]
+const TREE_VIEW := [300.0, 480.0, 800.0]
 const BUILDING_VIEW := [900.0, 1300.0, 1800.0]
+const BUSH_VIEW := [150.0, 250.0, 400.0]
+## Distance (au centre d'une cellule de 128 m) jusqu'à laquelle les arbres sont détaillés.
+const TREE_DETAIL_VIEW := [110.0, 170.0, 260.0]
 const UNLOAD_EXTRA := 350.0
 const MAX_PER_FRAME := 2
 
@@ -25,9 +30,9 @@ var _mask_dirty := false
 var _far_materials: Array[ShaderMaterial] = []
 var _plan_timer := 0.0
 var _near_size := 512.0
-var _conifer_mesh: Mesh
-var _broadleaf_mesh: Mesh
-var _building_mat: StandardMaterial3D
+var _building_mat: ShaderMaterial
+var _far_building_mat: ShaderMaterial
+var _detail: NoiseTexture2D
 var _road_mat: StandardMaterial3D
 var _water_mat: StandardMaterial3D
 
@@ -35,9 +40,9 @@ var _water_mat: StandardMaterial3D
 func setup(p_ride: Object, p_quality: int) -> void:
 	ride = p_ride
 	quality = clampi(p_quality, 0, 2)
-	_conifer_mesh = _conifer()
-	_broadleaf_mesh = _broadleaf()
-	_building_mat = _vertex_color_material(0.9)
+	_detail = _detail_texture()
+	_building_mat = ShaderMaterial.new()
+	_building_mat.shader = BUILDING_SHADER
 	_road_mat = _vertex_color_material(0.95)
 	_water_mat = _vertex_color_material(0.08)
 	_water_mat.metallic = 0.2
@@ -111,26 +116,39 @@ func _integrate(d: Dictionary) -> void:
 	var mat := ShaderMaterial.new()
 	mat.shader = TERRAIN_SHADER
 	mat.set_shader_parameter("albedo_tex", d.texture)
+	mat.set_shader_parameter("detail_tex", _detail)
 	terrain.material_override = mat
 	terrain.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	node.add_child(terrain)
 	var half_diag := 362.0
 	var tree_end: float = TREE_VIEW[quality] + half_diag
-	for key in ["conifers", "broadleaves"]:
-		var buf: PackedFloat32Array = d[key]
-		if buf.is_empty():
-			continue
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.use_colors = true
-		mm.mesh = _conifer_mesh if key == "conifers" else _broadleaf_mesh
-		mm.instance_count = buf.size() / 16
-		mm.buffer = buf
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		mmi.visibility_range_end = tree_end
-		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if quality == 2 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		node.add_child(mmi)
+	# Arbres par cellules de 128 m : modèle détaillé près de la caméra,
+	# modèle allégé plus loin.
+	var tree_shadow := GeometryInstance3D.SHADOW_CASTING_SETTING_ON if quality == 2 else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for cell: Dictionary in d.get("tree_cells", []):
+		var cnode := Node3D.new()
+		cnode.position = cell.center
+		node.add_child(cnode)
+		for key in ["conifers", "broadleaves"]:
+			var buf: PackedFloat32Array = cell[key]
+			if buf.is_empty():
+				continue
+			var conifer: bool = key == "conifers"
+			var hi := _instances(buf, Vegetation.conifer() if conifer else Vegetation.broadleaf())
+			hi.visibility_range_end = TREE_DETAIL_VIEW[quality]
+			hi.cast_shadow = tree_shadow
+			cnode.add_child(hi)
+			var lo := _instances(buf, Vegetation.conifer_low() if conifer else Vegetation.broadleaf_low())
+			lo.visibility_range_begin = TREE_DETAIL_VIEW[quality]
+			lo.visibility_range_end = TREE_VIEW[quality] + 90.0
+			lo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			cnode.add_child(lo)
+	var bushes: PackedFloat32Array = d.get("bushes", PackedFloat32Array())
+	if not bushes.is_empty():
+		var b := _instances(bushes, Vegetation.bush())
+		b.visibility_range_end = BUSH_VIEW[quality] + half_diag
+		b.cast_shadow = tree_shadow
+		node.add_child(b)
 	for key in ["buildings", "roads", "water"]:
 		if not d.has(key):
 			continue
@@ -151,6 +169,18 @@ func _integrate(d: Dictionary) -> void:
 		node.add_child(mi)
 	_loaded[i] = node
 	_set_mask(i, true)
+
+
+static func _instances(buf: PackedFloat32Array, mesh: Mesh) -> MultiMeshInstance3D:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = mesh
+	mm.instance_count = buf.size() / 16
+	mm.buffer = buf
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	return mmi
 
 
 func _build_far() -> void:
@@ -176,13 +206,26 @@ func _build_far() -> void:
 	_mask_image = Image.create(cells.x, cells.y, false, Image.FORMAT_R8)
 	_mask_texture = ImageTexture.create_from_image(_mask_image)
 	var rect := Vector4(_mask_origin.x, _mask_origin.y, cells.x * near_size, cells.y * near_size)
+	_far_building_mat = ShaderMaterial.new()
+	_far_building_mat.shader = BUILDING_SHADER
+	_far_building_mat.set_shader_parameter("use_mask", true)
+	_far_building_mat.set_shader_parameter("near_mask", _mask_texture)
+	_far_building_mat.set_shader_parameter("mask_rect", rect)
 	for d: Dictionary in datas:
+		if d.has("buildings"):
+			var bi := MeshInstance3D.new()
+			bi.position = d.center
+			bi.mesh = d.buildings
+			bi.material_override = _far_building_mat
+			bi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(bi)
 		var mi := MeshInstance3D.new()
 		mi.position = d.center
 		mi.mesh = d.mesh
 		var mat := ShaderMaterial.new()
 		mat.shader = TERRAIN_SHADER
 		mat.set_shader_parameter("albedo_tex", d.texture)
+		mat.set_shader_parameter("detail_tex", _detail)
 		mat.set_shader_parameter("use_mask", true)
 		mat.set_shader_parameter("near_mask", _mask_texture)
 		mat.set_shader_parameter("mask_rect", rect)
@@ -211,47 +254,16 @@ static func _vertex_color_material(roughness: float) -> StandardMaterial3D:
 	return m
 
 
-## Sapin simple : tronc et deux cônes, hauteur 1, diamètre 1 (mis à l'échelle par instance).
-static func _conifer() -> Mesh:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_cone(st, 0.0, 0.25, 0.06, 0.06, Color(0.30, 0.21, 0.13), 5)
-	_cone(st, 0.15, 0.68, 0.50, 0.0, Color(0.13, 0.27, 0.14), 7)
-	_cone(st, 0.48, 1.0, 0.34, 0.0, Color(0.15, 0.30, 0.15), 7)
-	st.generate_normals()
-	var m := st.commit()
-	m.surface_set_material(0, _vertex_color_material(1.0))
-	return m
-
-
-## Feuillu simple : tronc et houppier à facettes.
-static func _broadleaf() -> Mesh:
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	_cone(st, 0.0, 0.42, 0.07, 0.05, Color(0.32, 0.23, 0.15), 5)
-	var crown := Color(0.22, 0.36, 0.13)
-	# Deux troncs de cône dos à dos : un houppier anguleux mais peu coûteux.
-	_cone(st, 0.30, 0.68, 0.30, 0.50, crown, 7)
-	_cone(st, 0.68, 1.0, 0.50, 0.12, crown, 7)
-	st.generate_normals()
-	var m := st.commit()
-	m.surface_set_material(0, _vertex_color_material(1.0))
-	return m
-
-
-static func _cone(st: SurfaceTool, y0: float, y1: float, r0: float, r1: float, color: Color, sides: int) -> void:
-	st.set_smooth_group(-1)
-	for k in sides:
-		var a0 := TAU * k / sides
-		var a1 := TAU * (k + 1) / sides
-		var b0 := Vector3(cos(a0) * r0, y0, sin(a0) * r0)
-		var b1 := Vector3(cos(a1) * r0, y0, sin(a1) * r0)
-		var t0 := Vector3(cos(a0) * r1, y1, sin(a0) * r1)
-		var t1 := Vector3(cos(a1) * r1, y1, sin(a1) * r1)
-		st.set_color(color)
-		# Sens horaire vu de l'extérieur (face avant pour Godot).
-		for v in [b0, b1, t0]:
-			st.add_vertex(v)
-		if r1 > 0.0:
-			for v in [b1, t1, t0]:
-				st.add_vertex(v)
+## Grain de détail du sol (bruit sans couture), partagé par tous les carrés.
+static func _detail_texture() -> NoiseTexture2D:
+	var noise := FastNoiseLite.new()
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.03
+	noise.fractal_octaves = 4
+	var tex := NoiseTexture2D.new()
+	tex.width = 256
+	tex.height = 256
+	tex.seamless = true
+	tex.generate_mipmaps = true
+	tex.noise = noise
+	return tex

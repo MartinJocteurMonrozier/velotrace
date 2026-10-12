@@ -59,6 +59,7 @@ var _loading_label: Label
 var _loading_phase := ""
 var _loading_time := 0.0
 var _decor_note := ""
+var _lean := 0.0
 
 
 func _ready() -> void:
@@ -374,7 +375,11 @@ func _place_cyclist(delta: float, snap: bool) -> void:
 	var dir: Vector3 = t.direction
 	if dir.length() < 0.01:
 		dir = Vector3.FORWARD
-	_cyclist.transform = Transform3D(Basis.looking_at(dir.normalized(), Vector3.UP), pos + Vector3(0.0, 0.05, 0.0))
+	# Inclinaison en virage, lissée pour rester naturelle.
+	var lean_target: float = t.get("lean", 0.0)
+	_lean = lean_target if snap else lerpf(_lean, lean_target, clampf(delta * 3.0, 0.0, 1.0))
+	var basis := Basis.looking_at(dir.normalized(), Vector3.UP) * Basis(Vector3(0.0, 0.0, 1.0), _lean)
+	_cyclist.transform = Transform3D(basis, pos + Vector3(0.0, 0.05, 0.0))
 	_cyclist.animate(t.speed_kmh / 3.6, t.cadence_rpm, delta)
 	_update_camera(pos, dir, delta, snap)
 	if _real_world:
