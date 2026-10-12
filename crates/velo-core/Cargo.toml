@@ -1,0 +1,12 @@
+[package]
+name = "velo-core"
+version = "0.1.0"
+edition = "2021"
+description = "Cœur de velotrace : rapports, physique, parcours GPX et protocoles BLE"
+license = "MIT"
+
+[dependencies]
+gpx = "0.10"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "1"
