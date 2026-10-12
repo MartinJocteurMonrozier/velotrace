@@ -184,6 +184,87 @@ impl Route {
         let j = (i + 1).min(self.grades.len() - 1);
         self.grades[i] * (1.0 - t) + self.grades[j] * t
     }
+
+    /// Ascensions du parcours : au moins 80 m de dénivelé à 3 % de moyenne,
+    /// courts replats compris, du pied (là où la pente prend vraiment) au
+    /// sommet.
+    pub fn climbs(&self) -> Vec<Climb> {
+        let pts = &self.points;
+        let m = pts.len();
+        if m < 3 {
+            return Vec::new();
+        }
+        let step = (self.length_m() / (m - 1) as f64).max(0.1);
+        // Altitude lissée sur ~100 m : le bruit du GPS ne fait pas de bosses.
+        let r = (50.0 / step).round().max(1.0) as usize;
+        let e: Vec<f64> = (0..m)
+            .map(|i| {
+                let (a, b) = (i.saturating_sub(r), (i + r).min(m - 1));
+                pts[a..=b].iter().map(|p| p.elevation_m).sum::<f64>() / (b - a + 1) as f64
+            })
+            .collect();
+        let d: Vec<f64> = pts.iter().map(|p| p.distance_m).collect();
+        // Ça monte : au moins 2,5 % sur les 200 m qui suivent. Les replats
+        // et descentes de moins de 400 m ne coupent pas l'ascension.
+        let w = (200.0 / step).round().max(1.0) as usize;
+        let gap = (400.0 / step).round() as usize;
+        let rising = |i: usize| i + w < m && e[i + w] - e[i] >= 0.025 * (d[i + w] - d[i]);
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < m {
+            if !rising(i) {
+                i += 1;
+                continue;
+            }
+            // Le pied : là où la pente prend sur les 50 m suivants.
+            let q = (w / 4).max(1);
+            let mut start = i;
+            while start + q < m && e[start + q] - e[start] < 0.025 * (d[start + q] - d[start]) {
+                start += 1;
+            }
+            let mut last = i;
+            while i < m && i <= last + gap {
+                if rising(i) {
+                    last = i;
+                }
+                i += 1;
+            }
+            let end = (last..=(last + w).min(m - 1))
+                .max_by(|&a, &b| e[a].total_cmp(&e[b]))
+                .unwrap_or(last);
+            let c = Climb {
+                start_m: d[start],
+                end_m: d[end],
+                gain_m: e[end] - e[start],
+                top_elevation_m: e[end],
+            };
+            if c.gain_m >= 80.0 && c.grade() >= 0.03 && c.length_m() >= 500.0 {
+                out.push(c);
+            }
+            i = last + 1;
+        }
+        out
+    }
+}
+
+/// Une ascension du parcours.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Climb {
+    pub start_m: f64,
+    pub end_m: f64,
+    pub gain_m: f64,
+    pub top_elevation_m: f64,
+}
+
+impl Climb {
+    pub fn length_m(&self) -> f64 {
+        self.end_m - self.start_m
+    }
+
+    /// Pente moyenne (fraction).
+    pub fn grade(&self) -> f64 {
+        self.gain_m / self.length_m().max(1.0)
+    }
 }
 
 fn locate(points: &[RoutePoint], d: f64) -> (usize, f64) {
@@ -254,6 +335,36 @@ mod tests {
         );
         let p = r.point_at(250.0);
         assert!((p.y - 250.0).abs() < 0.5 && p.x.abs() < 1e-6);
+    }
+
+    #[test]
+    fn finds_climbs_and_ignores_bumps() {
+        // 2 km de plat, 5 km à 7 %, 1 km de descente à 3 %, 3 km à 4 %,
+        // une bosse de 30 m, 1 km de plat.
+        let profile = |d: f64| -> f64 {
+            let mut e = 500.0;
+            let seg = |d: f64, a: f64, b: f64| (d.min(b) - a).max(0.0);
+            e += seg(d, 2000.0, 7000.0) * 0.07;
+            e -= seg(d, 7000.0, 8000.0) * 0.03;
+            e += seg(d, 8000.0, 11000.0) * 0.04;
+            e += seg(d, 11500.0, 12000.0) * 0.06 - seg(d, 12000.0, 12500.0) * 0.06;
+            e
+        };
+        let raw: Vec<(f64, f64, f64)> = (0..=1350)
+            .map(|i| {
+                let d = i as f64 * 10.0;
+                (45.0 + (d / EARTH_RADIUS_M).to_degrees(), 6.0, profile(d))
+            })
+            .collect();
+        let r = Route::from_lat_lon_ele(None, &raw, 5.0, 40.0).unwrap();
+        let c = r.climbs();
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert!((c[0].start_m - 2000.0).abs() < 120.0, "{c:?}");
+        assert!((c[0].end_m - 7000.0).abs() < 120.0, "{c:?}");
+        assert!((c[0].grade() - 0.07).abs() < 0.005, "{c:?}");
+        assert!((c[1].start_m - 8000.0).abs() < 120.0, "{c:?}");
+        assert!((c[1].end_m - 11000.0).abs() < 120.0, "{c:?}");
+        assert!((c[1].top_elevation_m - 945.0).abs() < 8.0, "{c:?}");
     }
 
     #[test]

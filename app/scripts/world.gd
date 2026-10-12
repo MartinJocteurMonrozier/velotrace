@@ -8,8 +8,10 @@ const TILE_SIZE := 200.0
 const TILE_CELLS := 20
 const TERRAIN_MARGIN := 450.0
 const ROAD_SHADER := preload("res://shaders/road.gdshader")
+const WALLS_SHADER := preload("res://shaders/walls.gdshader")
 const RealWorld := preload("res://scripts/real_world.gd")
 const Vegetation := preload("res://scripts/vegetation.gd")
+const Race := preload("res://scripts/race.gd")
 ## Ombres du soleil selon la qualité : distance maximale et découpage.
 const SHADOW_DISTANCE := [60.0, 120.0, 220.0]
 ## Brouillard : distance à laquelle le décor disparaît presque.
@@ -22,6 +24,7 @@ static func build(ride: Object, parent: Node3D, base_elev: float, quality := 1, 
 	parent.add_child(_environment(quality))
 	parent.add_child(_sun(quality))
 	parent.add_child(_road(ride, base_elev, quality))
+	parent.add_child(Race.build(ride, base_elev, quality))
 	if real:
 		var rw := RealWorld.new()
 		rw.name = "DecorReel"
@@ -108,7 +111,7 @@ static func _terrain(ride: Object, base_elev: float) -> Node3D:
 
 
 ## Chaussée lissée (un point par mètre) en tronçons, amorces des routes
-## adjacentes, ronds-points, et balises de bord.
+## adjacentes, ronds-points, murs le long des talus raides, et balises de bord.
 static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
 	var root := Node3D.new()
 	root.name = "Route"
@@ -120,6 +123,15 @@ static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
 		mi.material_override = mat
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		root.add_child(mi)
+	var walls: Array = ride.road_walls(base_elev)
+	if not walls.is_empty():
+		var wall_mat := ShaderMaterial.new()
+		wall_mat.shader = WALLS_SHADER
+		for mesh: Mesh in walls:
+			var mi := MeshInstance3D.new()
+			mi.mesh = mesh
+			mi.material_override = wall_mat
+			root.add_child(mi)
 	var bushes: PackedFloat32Array = ride.road_bushes(base_elev)
 	if not bushes.is_empty():
 		root.add_child(RealWorld._instances(bushes, Vegetation.bush()))

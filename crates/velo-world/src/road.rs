@@ -78,10 +78,12 @@ impl Profile {
     fn rider_band(&self) -> (f64, f64, f64) {
         let hw = self.half_width;
         let keep = (hw - FROM_EDGE).max(0.3);
+        // Un peu plus loin du bord quand une bordure de trottoir le longe.
+        let kerb = |side: usize| if self.sidewalk[side] > 0.05 { 0.2 } else { 0.0 };
         let (lo, hi) = if self.oneway || hw < 2.3 {
-            (-hw + 0.9, hw - 0.4)
+            (-hw + 0.9 + kerb(0), hw - 0.4 - kerb(1))
         } else {
-            (0.6, hw - 0.3)
+            (0.6, hw - 0.3 - kerb(1))
         };
         (keep.clamp(lo, hi.max(lo)), lo, hi.max(lo))
     }
@@ -98,6 +100,9 @@ pub struct Section {
     pub right: (f64, f64),
     /// Abscisse le long du ruban (m), pour les motifs.
     pub s: f64,
+    /// Dévers : montée de la chaussée par mètre vers la droite (raccord
+    /// d'une amorce à une route en pente, anneau d'un rond-point incliné).
+    pub bank: f64,
     pub profile: Profile,
 }
 
@@ -150,7 +155,8 @@ pub fn push_strip(mesh: &mut MeshData, secs: &[Section], base: f64) {
         let (rx, rn) = p.right;
         for (off, dy, u) in verts {
             let (x, n) = (p.x + rx * off, p.n + rn * off);
-            mesh.positions.push([x as f32, (y + dy) as f32, -n as f32]);
+            let y = y + dy + p.bank * off;
+            mesh.positions.push([x as f32, y as f32, -n as f32]);
             mesh.normals.push([0.0, 1.0, 0.0]);
             mesh.uvs.push([u as f32, p.s as f32]);
             mesh.uv2s.push([hw as f32, lanes]);
@@ -373,13 +379,21 @@ impl RoadPath {
             .zip(&wide)
             .map(|(p, &k)| {
                 let grade = route.grade_at(p.d);
-                let w = 1.0 - smoothstep(0.0, 0.03, grade);
+                // Pas de corde sur l'anneau d'un rond-point : on tient sa droite.
+                let w = if p.profile.hidden {
+                    0.0
+                } else {
+                    1.0 - smoothstep(0.0, 0.03, grade)
+                };
                 let (keep, lo, hi) = p.profile.rider_band();
                 (keep - w * k * APEX_GAIN).clamp(lo, hi)
             })
             .collect();
+        // Le lissage déborde là où la chaussée se rétrécit : on borne à
+        // nouveau, pour ne jamais monter sur le trottoir ni l'accotement.
         for (p, o) in self.samples.iter_mut().zip(gaussian(&target, 10.0 / STEP)) {
-            p.offset = o;
+            let (_, lo, hi) = p.profile.rider_band();
+            p.offset = o.clamp(lo, hi);
         }
     }
 
@@ -406,6 +420,12 @@ impl RoadPath {
             0.0
         };
         (i, t)
+    }
+
+    /// Échantillon le plus proche de la distance `d` du parcours.
+    pub fn sample_at(&self, d: f64) -> Option<&PathSample> {
+        let (i, t) = self.locate(d);
+        self.samples.get(if t > 0.5 { i + 1 } else { i })
     }
 
     fn rider_point(&self, i: usize, t: f64) -> (f64, f64, f64) {
@@ -509,6 +529,7 @@ impl RoadPath {
                     elevation: p.elevation,
                     right: p.right(),
                     s: p.s,
+                    bank: 0.0,
                     profile: p.profile,
                 })
                 .collect();

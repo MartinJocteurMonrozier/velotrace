@@ -1,22 +1,43 @@
 //! La route d'après OpenStreetMap : tracé recalé sur la vraie route, largeur,
 //! voies, marquages et trottoirs, amorces des routes qui débouchent sur le
-//! parcours et ronds-points traversés.
+//! parcours, ronds-points traversés (avec leur vraie forme), et murs de
+//! soutènement ou parapets là où le relief est raide au bord de la route.
 
 use crate::mesh::{Instances, MeshData};
-use crate::osm::{join_rings, Line, LineKind, OsmData};
-use crate::road::{marks, push_strip, Profile, RoadPath, Section, KERB, VERGE};
+use crate::osm::{join_rings, BBox, Line, LineKind, OsmData};
+use crate::road::{marks, push_strip, PathSample, Profile, RoadPath, Section, KERB, VERGE};
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::TAU;
 use velo_core::route::Route;
 
 /// Écart maximal entre le GPX et la route OSM sur laquelle on le recale (m).
 const MATCH_RADIUS: f64 = 14.0;
-/// Longueur des amorces des routes qui croisent le parcours (m).
+/// Longueur des amorces des routes qui croisent le parcours, comptée depuis
+/// le bord de la chaussée (m).
 pub const STUB_LEN: f64 = 30.0;
-/// Évasement des amorces au débouché (m de plus de chaque côté).
+/// Évasement des amorces au débouché (m de plus de chaque côté, à angle droit).
 const FLARE: f64 = 2.5;
 /// Accotement réduit entre trottoir et façades.
 const TOWN_VERGE: f64 = 0.6;
+/// Une route suivie par le parcours en fait partie tant qu'elle reste à
+/// moins de cette marge du bord de la chaussée (m) : pas d'amorce parasite
+/// quand son tracé coupe un lacet un peu autrement que le nôtre.
+const FOLLOW_MARGIN: f64 = 4.0;
+/// Dénivelé du relief sur 10 m au-delà de l'accotement qui appelle un mur
+/// de soutènement (en montée) ou un parapet (au-dessus du vide).
+const WALL_RISE: f64 = 6.0;
+/// Au-delà (plus de 45°), la montagne est taillée dans le rocher : une
+/// falaise plutôt qu'un mur.
+const CLIFF_RISE: f64 = 10.0;
+/// Replat caché derrière un mur de soutènement, sous sa terrasse (m) : plus
+/// large qu'une maille du relief détaillé, pour que la pente ne passe jamais
+/// devant le mur.
+const WALL_FLAT: f64 = 7.0;
+/// Profondeur de la terrasse au-dessus d'un mur de soutènement (m).
+const WALL_DEPTH: f64 = WALL_FLAT + 4.0;
+/// Fondu court du relief au-delà d'un mur ou d'un parapet (m) : talus raide,
+/// rocheux, plutôt qu'une longue pente douce.
+const WALL_BLEND: f64 = 8.0;
 
 /// Index spatial simple : identifiants rangés par case carrée.
 #[derive(Debug, Clone, Default)]
@@ -113,12 +134,36 @@ impl SampleIndex {
 struct FlatPoint {
     x: f64,
     n: f64,
-    /// Hauteur visée du sol.
+    /// Hauteur visée du sol au point, et sa pente (m/m vers l'est, le nord)
+    /// pour suivre une chaussée inclinée.
     target: f64,
-    /// Rayon du replat, puis largeur du fondu vers le relief.
-    flat: f64,
-    blend: f64,
+    slope: (f64, f64),
+    /// Vers la droite : rayon du replat et largeur du fondu vers le relief,
+    /// à gauche et à droite.
+    right: (f64, f64),
+    flat: [f64; 2],
+    blend: [f64; 2],
     route: bool,
+}
+
+impl FlatPoint {
+    /// Replat circulaire et horizontal.
+    fn round(p: (f64, f64), target: f64, flat: f64, blend: f64) -> Self {
+        FlatPoint {
+            x: p.0,
+            n: p.1,
+            target,
+            slope: (0.0, 0.0),
+            right: (1.0, 0.0),
+            flat: [flat; 2],
+            blend: [blend; 2],
+            route: false,
+        }
+    }
+
+    fn side(&self, x: f64, n: f64) -> usize {
+        usize::from((x - self.x) * self.right.0 + (n - self.n) * self.right.1 >= 0.0)
+    }
 }
 
 /// Où et à quelle hauteur aplanir le relief sous les chaussées.
@@ -139,7 +184,9 @@ impl Flatten {
     }
 
     fn add(&mut self, p: FlatPoint) {
-        self.reach = self.reach.max(p.flat + p.blend);
+        for s in 0..2 {
+            self.reach = self.reach.max(p.flat[s] + p.blend[s]);
+        }
         self.grid.insert(p.x, p.n, self.pts.len() as u32);
         self.pts.push(p);
     }
@@ -150,16 +197,18 @@ impl Flatten {
         self.grid.near(x, n, self.reach, |i| {
             let p = &self.pts[i as usize];
             let d = (p.x - x).hypot(p.n - n);
-            if d >= p.flat + p.blend {
+            let s = p.side(x, n);
+            if d >= p.flat[s] + p.blend[s] {
                 return;
             }
-            let w = 1.0 - smoothstep(p.flat, p.flat + p.blend, d);
+            let w = 1.0 - smoothstep(p.flat[s], p.flat[s] + p.blend[s], d);
             let better = match best {
                 None => true,
                 Some((bw, bd, _)) => w > bw + 1e-9 || (w > bw - 1e-9 && d < bd),
             };
             if better {
-                best = Some((w, d, p.target));
+                let t = p.target + p.slope.0 * (x - p.x) + p.slope.1 * (n - p.n);
+                best = Some((w, d, t));
             }
         });
         best.map(|(w, _, t)| (w, t))
@@ -179,7 +228,7 @@ impl Flatten {
         let mut hit = false;
         self.grid.near(x, n, self.reach, |i| {
             let p = &self.pts[i as usize];
-            if !p.route && (p.x - x).hypot(p.n - n) < p.flat + margin {
+            if !p.route && (p.x - x).hypot(p.n - n) < p.flat[p.side(x, n)] + margin {
                 hit = true;
             }
         });
@@ -187,23 +236,181 @@ impl Flatten {
     }
 }
 
-/// Rond-point traversé ou longé par le parcours (sens antihoraire).
+/// Rond-point traversé ou longé par le parcours, avec la forme de son
+/// anneau dans OSM (souvent ovale) et sa pente.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Roundabout {
+    /// Centre de gravité de l'anneau.
     pub center: (f64, f64),
-    /// Rayon de l'axe de l'anneau (m).
+    /// Axe de l'anneau : polyligne fermée (sans répéter le premier point),
+    /// dans le sens antihoraire, un point par mètre environ.
+    pub ring: Vec<(f64, f64)>,
+    /// Distance moyenne et maximale du centre à l'axe (m).
     pub radius: f64,
+    pub rmax: f64,
     pub half_width: f64,
     /// Bande pavée franchissable autour de l'îlot.
     pub apron: f64,
+    /// Altitude de la chaussée au centre, et sa pente (m/m vers l'est, le nord).
     pub elevation: f64,
+    pub slope: (f64, f64),
     pub lanes: u8,
+    /// Débouchés (point du bord extérieur, demi-largeur) : pas d'accotement.
+    mouths: Vec<((f64, f64), f64)>,
 }
 
 impl Roundabout {
-    /// Rayon de l'îlot central.
+    /// Rayon moyen de l'îlot central.
     pub fn island(&self) -> f64 {
         (self.radius - self.half_width - self.apron).max(0.5)
+    }
+
+    /// Altitude de la chaussée en (x, n).
+    pub fn height(&self, x: f64, n: f64) -> f64 {
+        self.elevation + self.slope.0 * (x - self.center.0) + self.slope.1 * (n - self.center.1)
+    }
+
+    /// Vecteur unitaire vers l'extérieur de l'anneau au point `i`.
+    fn outward(&self, i: usize) -> (f64, f64) {
+        let m = self.ring.len();
+        let (a, b) = (self.ring[(i + m - 1) % m], self.ring[(i + 1) % m]);
+        let t = unit((b.0 - a.0, b.1 - a.1));
+        (t.1, -t.0)
+    }
+
+    /// Point à `off` mètres de l'axe vers l'extérieur (négatif : vers l'îlot).
+    fn edge(&self, i: usize, off: f64) -> (f64, f64) {
+        let (q, o) = (self.ring[i], self.outward(i));
+        (q.0 + o.0 * off, q.1 + o.1 * off)
+    }
+
+    fn inside(&self, p: (f64, f64)) -> bool {
+        let m = self.ring.len();
+        let mut inside = false;
+        for i in 0..m {
+            let (a, b) = (self.ring[i], self.ring[(i + 1) % m]);
+            if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+
+    /// Distance à l'axe de l'anneau, négative à l'intérieur (minorant
+    /// grossier loin du rond-point).
+    pub fn signed(&self, p: (f64, f64)) -> f64 {
+        let dc = dist(p, self.center);
+        if dc > self.rmax + 60.0 {
+            return dc - self.rmax;
+        }
+        let m = self.ring.len();
+        let d = (0..m)
+            .map(|i| project(p, self.ring[i], self.ring[(i + 1) % m]).0)
+            .fold(f64::MAX, f64::min);
+        if self.inside(p) {
+            -d
+        } else {
+            d
+        }
+    }
+
+    /// Tangente (sens antihoraire) au point de l'axe le plus proche de `p`.
+    fn tangent_near(&self, p: (f64, f64)) -> (f64, f64) {
+        let i = (0..self.ring.len())
+            .min_by(|&a, &b| dist(p, self.ring[a]).total_cmp(&dist(p, self.ring[b])))
+            .unwrap_or(0);
+        let o = self.outward(i);
+        (-o.1, o.0)
+    }
+
+    /// Plan de la chaussée ajusté (moindres carrés, pente modérée) sur les
+    /// altitudes du parcours qui traverse le rond-point et l'approche.
+    fn fit_plane(&mut self, samples: &[PathSample]) {
+        let c = self.center;
+        let reach = self.rmax + self.half_width + 12.0;
+        let mut a = [[0.0; 3]; 3];
+        let mut b = [0.0; 3];
+        let mut nearest: Option<(f64, f64)> = None;
+        for p in samples {
+            let (dx, dn) = (p.x - c.0, p.n - c.1);
+            let d = dx.hypot(dn);
+            if nearest.map_or(true, |(bd, _)| d < bd) {
+                nearest = Some((d, p.elevation));
+            }
+            if d > reach {
+                continue;
+            }
+            let v = [1.0, dx, dn];
+            for (row, &vi) in a.iter_mut().zip(&v) {
+                for (cell, &vj) in row.iter_mut().zip(&v) {
+                    *cell += vi * vj;
+                }
+            }
+            for (bi, &vi) in b.iter_mut().zip(&v) {
+                *bi += vi * p.elevation;
+            }
+        }
+        self.elevation = nearest.map_or(0.0, |(_, e)| e);
+        self.slope = (0.0, 0.0);
+        if a[0][0] < 3.0 {
+            return;
+        }
+        // Rappel vers l'horizontale : le parcours ne dit rien de la pente
+        // en travers de sa direction.
+        let lambda = a[0][0] * 10.0;
+        a[1][1] += lambda;
+        a[2][2] += lambda;
+        if let Some(x) = solve3(a, b) {
+            self.elevation = x[0];
+            let g = x[1].hypot(x[2]);
+            let k = if g > 0.1 { 0.1 / g } else { 1.0 };
+            self.slope = (x[1] * k, x[2] * k);
+        }
+    }
+}
+
+/// Mur le long du parcours, côté extérieur de l'accotement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wall {
+    pub pts: Vec<WallPoint>,
+    /// Profondeur du dessus : terrasse d'un mur de soutènement, épaisseur
+    /// d'un parapet (m).
+    pub depth: f64,
+    /// Mur de soutènement (côté montagne) plutôt que parapet (côté vide).
+    pub retaining: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallPoint {
+    /// Pied de la face avant.
+    pub x: f64,
+    pub n: f64,
+    /// Vecteur unitaire de la route vers le mur.
+    pub out: (f64, f64),
+    /// Altitudes absolues du pied (enterré) et du haut.
+    pub base: f64,
+    pub top: f64,
+    /// Abscisse le long du mur (m).
+    pub s: f64,
+}
+
+/// Route OSM dessinée drapée sur le sol, hors du parcours, des amorces et
+/// des ronds-points.
+#[derive(Debug, Clone)]
+pub struct Ribbon {
+    /// Indice de la ligne dans `OsmData::lines`.
+    pub line: usize,
+    pub points: Vec<(f64, f64)>,
+    pub bbox: BBox,
+}
+
+impl Ribbon {
+    fn new(line: usize, points: Vec<(f64, f64)>) -> Self {
+        Ribbon {
+            line,
+            bbox: BBox::of(points.iter().copied()),
+            points,
+        }
     }
 }
 
@@ -213,6 +420,9 @@ pub struct RoadNetwork {
     /// Amorces : rubans de chaussée, altitude absolue.
     pub stubs: Vec<Vec<Section>>,
     pub roundabouts: Vec<Roundabout>,
+    /// Le reste des routes OSM, à draper sur le sol.
+    pub ribbons: Vec<Ribbon>,
+    pub walls: Vec<Wall>,
     pub flat: Flatten,
     pub samples: SampleIndex,
 }
@@ -236,13 +446,22 @@ type RingCandidate = (Vec<(f64, f64)>, Vec<usize>, bool);
 
 /// Amorce avant le calcul de son altitude.
 struct StubDraft {
+    /// Depuis le nœud de raccord (sous la chaussée rejointe).
     pts: Vec<(f64, f64)>,
     start: Hit,
     end: Option<Hit>,
+    /// Longueur passée sous la chaussée rejointe, au début et à la fin.
+    inner: (f64, f64),
+    /// Sinus et cosinus de l'angle avec la chaussée rejointe, au début et à la fin.
+    sin: (f64, f64),
+    cos: (f64, f64),
     half_width: f64,
     lanes: u8,
     oneway: bool,
     give_way: bool,
+    centre: bool,
+    /// Hauteur du ruban drapé qui prolonge l'amorce au-dessus du sol.
+    lift: f64,
 }
 
 /// Largeur de chaussée (m) et nombre de voies d'une route OSM.
@@ -275,6 +494,23 @@ pub fn carriageway(line: &Line) -> (f64, u8) {
         (f64::from(lanes) * lane_w).max(if lanes == 1 { 3.5 } else { 0.0 })
     };
     (w.clamp(2.5, 28.0), lanes)
+}
+
+/// Hauteur au-dessus du sol du ruban drapé d'une route OSM.
+pub fn ribbon_lift(line: &Line) -> f64 {
+    match line.kind {
+        LineKind::Road { major: true, .. } => 0.14,
+        _ => 0.11,
+    }
+}
+
+/// La route OSM a-t-elle un axe peint (double sens, au moins tertiaire) ?
+pub fn has_centre_line(line: &Line) -> bool {
+    let (_, lanes) = carriageway(line);
+    matches!(line.kind, LineKind::Road { paved: true, .. })
+        && !line.info.oneway
+        && lanes >= 2
+        && line.info.rank >= 3
 }
 
 /// Profil de la chaussée d'une route OSM (sans les trottoirs).
@@ -335,6 +571,29 @@ fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
 fn smoothstep(a: f64, b: f64, x: f64) -> f64 {
     let t = ((x - a) / (b - a)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+fn det3(m: [[f64; 3]; 3]) -> f64 {
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+        + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+}
+
+/// Résout `a · x = b` (règle de Cramer).
+fn solve3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
+    let d = det3(a);
+    if d.abs() < 1e-9 {
+        return None;
+    }
+    let mut x = [0.0; 3];
+    for (k, xk) in x.iter_mut().enumerate() {
+        let mut m = a;
+        for (row, &bi) in m.iter_mut().zip(&b) {
+            row[k] = bi;
+        }
+        *xk = det3(m) / d;
+    }
+    Some(x)
 }
 
 /// Lissage gaussien d'une suite régulière, `sigma` en nombre d'éléments.
@@ -447,6 +706,120 @@ fn resample(pts: &[(f64, f64)]) -> Vec<(f64, f64, f64)> {
     out
 }
 
+fn polyline_len(pts: &[(f64, f64)]) -> f64 {
+    pts.windows(2).map(|w| dist(w[0], w[1])).sum()
+}
+
+/// Morceau d'une polyligne entre les abscisses `l0` et `l1` (m).
+fn sub_polyline(pts: &[(f64, f64)], l0: f64, l1: f64) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut s = 0.0;
+    for w in pts.windows(2) {
+        let d = dist(w[0], w[1]);
+        let at = |l: f64| {
+            let t = ((l - s) / d.max(1e-9)).clamp(0.0, 1.0);
+            (
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            )
+        };
+        if out.is_empty() && l0 < s + d {
+            out.push(at(l0));
+        }
+        if !out.is_empty() {
+            if l1 <= s + d {
+                out.push(at(l1));
+                return out;
+            }
+            out.push(w[1]);
+        }
+        s += d;
+    }
+    out
+}
+
+fn point_at(pts: &[(f64, f64)], l: f64) -> (f64, f64) {
+    let mut s = 0.0;
+    for w in pts.windows(2) {
+        let d = dist(w[0], w[1]);
+        if l <= s + d {
+            let t = ((l - s) / d.max(1e-9)).clamp(0.0, 1.0);
+            return (
+                w[0].0 + (w[1].0 - w[0].0) * t,
+                w[0].1 + (w[1].1 - w[0].1) * t,
+            );
+        }
+        s += d;
+    }
+    *pts.last().unwrap()
+}
+
+/// Abscisse du point de la polyligne le plus proche de `q`.
+fn arc_of(pts: &[(f64, f64)], q: (f64, f64)) -> f64 {
+    let mut best = (f64::MAX, 0.0);
+    let mut s = 0.0;
+    for w in pts.windows(2) {
+        let (d, p) = project(q, w[0], w[1]);
+        if d < best.0 {
+            best = (d, s + dist(w[0], p));
+        }
+        s += dist(w[0], w[1]);
+    }
+    best.1
+}
+
+/// Aire signée (positive dans le sens antihoraire) et centre de gravité
+/// d'un polygone.
+fn area_centroid(ring: &[(f64, f64)]) -> (f64, (f64, f64)) {
+    let m = ring.len();
+    let (mut a, mut cx, mut cn) = (0.0, 0.0, 0.0);
+    for i in 0..m {
+        let (p, q) = (ring[i], ring[(i + 1) % m]);
+        let c = p.0 * q.1 - q.0 * p.1;
+        a += c;
+        cx += (p.0 + q.0) * c;
+        cn += (p.1 + q.1) * c;
+    }
+    a /= 2.0;
+    if a.abs() < 1e-9 {
+        let k = m as f64;
+        return (
+            0.0,
+            (
+                ring.iter().map(|p| p.0).sum::<f64>() / k,
+                ring.iter().map(|p| p.1).sum::<f64>() / k,
+            ),
+        );
+    }
+    (a, (cx / (6.0 * a), cn / (6.0 * a)))
+}
+
+/// Anneau fermé rééchantillonné tous les mètres et lissé (angles des nœuds OSM).
+fn smooth_ring(ring: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut closed = ring.to_vec();
+    closed.push(ring[0]);
+    let mut pts: Vec<(f64, f64)> = resample(&closed).into_iter().map(|p| (p.0, p.1)).collect();
+    if pts.len() > 2 && dist(pts[0], *pts.last().unwrap()) < 0.5 {
+        pts.pop();
+    }
+    let m = pts.len() as isize;
+    let sigma: f64 = 2.0;
+    let r = 6isize;
+    (0..m)
+        .map(|i| {
+            let (mut sx, mut sn, mut sw) = (0.0, 0.0, 0.0);
+            for k in -r..=r {
+                let w = (-((k * k) as f64) / (2.0 * sigma * sigma)).exp();
+                let p = pts[(i + k).rem_euclid(m) as usize];
+                sx += p.0 * w;
+                sn += p.1 * w;
+                sw += w;
+            }
+            (sx / sw, sn / sw)
+        })
+        .collect()
+}
+
 /// Recale le parcours sur OSM et décrit la route et ses abords.
 /// `dem(x, n)` donne l'altitude brute du relief.
 pub fn build(
@@ -555,9 +928,10 @@ pub fn build(
                 .map(|(li, _, dir)| (li, dir.0 * p.tangent.0 + dir.1 * p.tangent.1 < 0.0))
         })
         .collect();
+    let route_lines: HashSet<usize> = matched.iter().flatten().map(|m| m.0).collect();
 
     // 2. Ronds-points : anneaux étiquetés `junction=roundabout`, ou petites
-    //    boucles fermées presque circulaires.
+    //    boucles fermées presque circulaires. On garde leur vraie forme.
     let mut ring_lines: HashSet<usize> = HashSet::new();
     let mut candidates: Vec<RingCandidate> = Vec::new();
     let tagged: Vec<usize> = roads
@@ -593,37 +967,35 @@ pub fn build(
     }
     let mut rings: Vec<Roundabout> = Vec::new();
     for (pts, lines, tagged) in candidates {
-        if dist(pts[0], *pts.last().unwrap()) > 0.05 {
+        if pts.len() < 5 || dist(pts[0], *pts.last().unwrap()) > 0.05 {
             continue;
         }
-        let ring = &pts[..pts.len() - 1];
+        let mut ring = pts[..pts.len() - 1].to_vec();
+        let (area, c) = area_centroid(&ring);
+        if area < 0.0 {
+            ring.reverse();
+        }
         let k = ring.len() as f64;
-        let c = (
-            ring.iter().map(|p| p.0).sum::<f64>() / k,
-            ring.iter().map(|p| p.1).sum::<f64>() / k,
-        );
         let radii: Vec<f64> = ring.iter().map(|&p| dist(p, c)).collect();
         let r = radii.iter().sum::<f64>() / k;
+        let rmax = radii.iter().copied().fold(0.0, f64::max);
         let sd = (radii.iter().map(|x| (x - r) * (x - r)).sum::<f64>() / k).sqrt();
         let round_enough = if tagged {
             sd / r < 0.35 && (4.0..80.0).contains(&r)
         } else {
             sd / r < 0.2 && (5.0..45.0).contains(&r)
         };
-        if !round_enough {
+        if !round_enough || samples.nearest(c.0, c.1, rmax + 30.0).is_none() {
             continue;
         }
-        let Some((_, j)) = samples.nearest(c.0, c.1, r + 30.0) else {
-            continue;
-        };
-        // Les lignes de l'anneau : celles dont un point est sur le cercle.
+        // Les lignes de l'anneau : celles dont tous les points le longent.
         let on_ring: Vec<usize> = lines
             .into_iter()
             .filter(|&li| {
                 osm.lines[li]
                     .points
                     .iter()
-                    .all(|&p| (dist(p, c) - r).abs() < r * 0.5 + 2.0)
+                    .all(|&p| (dist(p, c) - r).abs() < (rmax - r) + r * 0.5 + 2.0)
             })
             .collect();
         let first = on_ring.first().map(|&li| &osm.lines[li]);
@@ -632,67 +1004,246 @@ pub fn build(
             Some(l) if l.info.width_tagged => l.width_m / 2.0,
             _ => (f64::from(lanes) * 3.5).max(7.0) / 2.0,
         };
-        hw = hw.min(r * 0.55);
+        let rmin = radii.iter().copied().fold(f64::MAX, f64::min);
+        hw = hw.min(r * 0.55).min(rmin * 0.7);
         ring_lines.extend(on_ring);
-        rings.push(Roundabout {
+        let mut rb = Roundabout {
             center: c,
+            ring: smooth_ring(&ring),
             radius: r,
+            rmax,
             half_width: hw,
-            apron: (r - hw - 2.0).clamp(0.0, 1.5),
-            elevation: path.samples[j].elevation,
+            apron: (rmin - hw - 2.0).clamp(0.0, 1.5),
+            elevation: 0.0,
+            slope: (0.0, 0.0),
             lanes,
-        });
+            mouths: Vec::new(),
+        };
+        rb.fit_plane(&path.samples);
+        rings.push(rb);
     }
 
-    // 3. Profil de la chaussée sous chaque échantillon.
+    // 3. Profil de la chaussée sous chaussée échantillon ; dans un rond-point,
+    //    l'anneau prend le relais et le parcours rejoint son plan.
     for (p, w) in path.samples.iter_mut().zip(&way) {
         if let Some((li, _)) = *w {
             p.profile = profile_for(&osm.lines[li]);
         }
-        p.profile.hidden = rings
-            .iter()
-            .any(|r| dist((p.x, p.n), r.center) < r.radius + r.half_width - 0.7);
+        for r in &rings {
+            let sd = r.signed((p.x, p.n));
+            if sd < r.half_width - 0.7 {
+                p.profile = Profile {
+                    half_width: r.half_width,
+                    sidewalk: [0.0; 2],
+                    verge: [0.0, 1.2],
+                    lanes: r.lanes,
+                    oneway: true,
+                    marks: marks::EDGE_LEFT,
+                    hidden: true,
+                };
+                p.elevation = r.height(p.x, p.n);
+            } else if sd - r.half_width < 25.0 {
+                // Raccord en douceur, un rien sous l'anneau là où les
+                // chaussées se chevauchent.
+                let out = sd - r.half_width;
+                let w = 1.0 - smoothstep(0.0, 25.0, out);
+                let dip = 0.04 * (1.0 - smoothstep(2.0, 8.0, out));
+                p.elevation += (r.height(p.x, p.n) - dip - p.elevation) * w;
+            }
+        }
+    }
+    for k in 1..ms {
+        let (a, b) = (&path.samples[k - 1], &path.samples[k]);
+        if a.profile.hidden == b.profile.hidden {
+            continue;
+        }
+        let (inner, outer) = if a.profile.hidden { (a, b) } else { (b, a) };
+        if let Some(r) = rings.iter_mut().min_by(|x, y| {
+            x.signed((inner.x, inner.n))
+                .total_cmp(&y.signed((inner.x, inner.n)))
+        }) {
+            r.mouths
+                .push(((outer.x, outer.n), outer.profile.half_width));
+        }
     }
 
-    // 4. Amorces des routes qui quittent le parcours ou un rond-point.
-    let hit_at = |q: (f64, f64), path: &RoadPath| -> Option<Hit> {
+    // 4. Amorces des routes qui débouchent sur le parcours ou un rond-point.
+    //    Une route n'en a une que si elle partage un nœud OSM avec la route
+    //    suivie ou l'anneau : celles qui passent à côté sans s'y raccorder
+    //    (parallèles, ponts) sont dessinées telles quelles.
+    let node_key = |p: (f64, f64)| ((p.0 * 4.0).round() as i64, (p.1 * 4.0).round() as i64);
+    let mut nodes: HashSet<(i64, i64)> = HashSet::new();
+    for &li in route_lines.iter().chain(&ring_lines) {
+        for &p in &osm.lines[li].points {
+            nodes.insert(node_key(p));
+        }
+    }
+    let is_node = |p: (f64, f64)| {
+        let (i, j) = node_key(p);
+        (-1..=1).any(|di| (-1..=1).any(|dj| nodes.contains(&(i + di, j + dj))))
+    };
+    // De combien `q` dépasse le début ou la fin du parcours (m, négatif sinon).
+    let beyond_ends = |j: usize, q: (f64, f64)| -> f64 {
+        let p = &path.samples[j];
+        let along = (q.0 - p.x) * p.tangent.0 + (q.1 - p.n) * p.tangent.1;
+        if j == 0 {
+            -along
+        } else if j + 1 == ms {
+            along
+        } else {
+            f64::MIN
+        }
+    };
+    let hit_at = |q: (f64, f64), follows: bool| -> Option<Hit> {
         for (k, r) in rings.iter().enumerate() {
-            if dist(q, r.center) < r.radius + r.half_width + 0.3 {
+            if r.signed(q) < r.half_width + 0.3 {
                 return Some(Hit::Ring(k));
             }
         }
-        let (d, j) = samples.nearest(q.0, q.1, 12.0)?;
+        let margin = if follows { FOLLOW_MARGIN } else { 0.6 };
+        let (d, j) = samples.nearest(q.0, q.1, 12.0 + margin)?;
         let pr = &path.samples[j].profile;
-        (d < pr.half_width + 0.6 && !pr.hidden).then_some(Hit::Route(j))
+        (d < pr.half_width + margin && !pr.hidden && beyond_ends(j, q) < 0.5)
+            .then_some(Hit::Route(j))
     };
     // Écart (signé) au bord de la chaussée qu'on rejoint, un peu en dedans.
-    let edge_gap = |hit: Hit, q: (f64, f64), path: &RoadPath| -> f64 {
+    let edge_gap = |hit: Hit, q: (f64, f64)| -> f64 {
         match hit {
-            Hit::Ring(k) => {
-                dist(q, rings[k].center) - (rings[k].radius + rings[k].half_width - 0.3)
-            }
+            Hit::Ring(k) => rings[k].signed(q) - (rings[k].half_width - 0.3),
             Hit::Route(j) => {
+                let j = samples.nearest(q.0, q.1, 40.0).map_or(j, |(_, k)| k);
                 let p = &path.samples[j];
                 let (rx, rn) = p.right();
-                ((q.0 - p.x) * rx + (q.1 - p.n) * rn).abs() - (p.profile.half_width - 0.3)
+                let lateral =
+                    ((q.0 - p.x) * rx + (q.1 - p.n) * rn).abs() - (p.profile.half_width - 0.3);
+                lateral.max(beyond_ends(j, q))
             }
         }
     };
+    // Longueur parcourue sous la chaussée rejointe avant d'en sortir.
+    let exit_len = |pts: &[(f64, f64)], hit: Hit| -> f64 {
+        let mut s = 0.0;
+        if edge_gap(hit, pts[0]) >= 0.0 {
+            return 0.0;
+        }
+        for w in pts.windows(2) {
+            let d = dist(w[0], w[1]);
+            if edge_gap(hit, w[1]) >= 0.0 {
+                let (mut lo, mut hi) = (0.0, 1.0);
+                for _ in 0..12 {
+                    let t: f64 = (lo + hi) / 2.0;
+                    let q = (
+                        w[0].0 + (w[1].0 - w[0].0) * t,
+                        w[0].1 + (w[1].1 - w[0].1) * t,
+                    );
+                    if edge_gap(hit, q) < 0.0 {
+                        lo = t;
+                    } else {
+                        hi = t;
+                    }
+                }
+                return s + d * lo;
+            }
+            s += d;
+        }
+        s
+    };
+    // Sens de la chaussée rejointe près de `q`.
+    let main_tangent = |hit: Hit, q: (f64, f64)| -> (f64, f64) {
+        match hit {
+            Hit::Ring(k) => rings[k].tangent_near(q),
+            Hit::Route(j) => {
+                let j = samples.nearest(q.0, q.1, 40.0).map_or(j, |(_, k)| k);
+                path.samples[j].tangent
+            }
+        }
+    };
+    let main_rank = |h: Hit| match h {
+        Hit::Route(j) => way[j].map_or(3, |(l, _)| osm.lines[l].info.rank),
+        Hit::Ring(_) => 6,
+    };
     let mut drafts: Vec<StubDraft> = Vec::new();
+    let mut ribbons: Vec<Ribbon> = Vec::new();
     for &li in &roads {
         if ring_lines.contains(&li) {
             continue;
         }
         let line = &osm.lines[li];
+        let follows = route_lines.contains(&li);
         let dens = densify(&line.points, 2.0);
-        let hits: Vec<Option<Hit>> = dens.iter().map(|&q| hit_at(q, &path)).collect();
-        if hits.iter().all(Option::is_none) || hits.iter().all(Option::is_some) {
+        let hits: Vec<Option<Hit>> = dens.iter().map(|&q| hit_at(q, follows)).collect();
+        let node: Vec<bool> = dens.iter().map(|&q| is_node(q)).collect();
+        if hits.iter().all(Option::is_none) || (!follows && !node.iter().any(|&b| b)) {
+            ribbons.push(Ribbon::new(li, line.points.clone()));
             continue;
         }
         let (width, lanes) = carriageway(line);
-        let main_rank = |h: Hit| match h {
-            Hit::Route(j) => way[j].map_or(3, |(l, _)| osm.lines[l].info.rank),
-            Hit::Ring(_) => 6,
+        let paved = matches!(line.kind, LineKind::Road { paved: true, .. });
+        let give_way = |h: Hit| line.info.rank >= 1 && line.info.rank <= main_rank(h);
+        // Ajoute l'amorce `pts` (du nœud de départ au nœud d'arrivée s'il y
+        // en a un) ; renvoie son dernier point.
+        // Un nœud un peu hors de la chaussée : on prolonge l'amorce dessous.
+        let tuck = |pts: &mut Vec<(f64, f64)>, h: Hit| {
+            let gap = edge_gap(h, pts[0]);
+            if gap < 0.0 || pts.len() < 2 {
+                return;
+            }
+            let d = unit((pts[1].0 - pts[0].0, pts[1].1 - pts[0].1));
+            let t = main_tangent(h, pts[0]);
+            let sin = (d.0 * t.1 - d.1 * t.0).abs().max(0.25);
+            let back = ((gap + 1.0) / sin).min(10.0);
+            pts.insert(0, (pts[0].0 - d.0 * back, pts[0].1 - d.1 * back));
+        };
+        let mut add = |mut pts: Vec<(f64, f64)>, s: Hit, e: Option<Hit>| -> Option<(f64, f64)> {
+            tuck(&mut pts, s);
+            if let Some(h) = e {
+                pts.reverse();
+                tuck(&mut pts, h);
+                pts.reverse();
+            }
+            let inner_s = exit_len(&pts, s);
+            let rev: Vec<(f64, f64)> = pts.iter().rev().copied().collect();
+            let inner_e = e.map_or(0.0, |h| exit_len(&rev, h));
+            let pts = if e.is_none() {
+                sub_polyline(&pts, 0.0, inner_s + STUB_LEN)
+            } else {
+                pts
+            };
+            let len = polyline_len(&pts);
+            if pts.len() < 2 || len - inner_s - inner_e < 3.0 {
+                return None;
+            }
+            let angle = |pts: &[(f64, f64)], inner: f64, h: Hit| {
+                let a = point_at(pts, inner);
+                let d = unit({
+                    let b = point_at(pts, inner + 6.0);
+                    (b.0 - a.0, b.1 - a.1)
+                });
+                let t = main_tangent(h, a);
+                (
+                    (d.0 * t.1 - d.1 * t.0).abs().max(0.25),
+                    (d.0 * t.0 + d.1 * t.1).abs(),
+                )
+            };
+            let (sin_s, cos_s) = angle(&pts, inner_s, s);
+            let rev: Vec<(f64, f64)> = pts.iter().rev().copied().collect();
+            let (sin_e, cos_e) = e.map_or((1.0, 0.0), |h| angle(&rev, inner_e, h));
+            let last = *pts.last().unwrap();
+            drafts.push(StubDraft {
+                pts,
+                start: s,
+                end: e,
+                inner: (inner_s, inner_e),
+                sin: (sin_s, sin_e),
+                cos: (cos_s, cos_e),
+                half_width: (width / 2.0).min(6.0),
+                lanes: if paved { lanes } else { 0 },
+                oneway: line.info.oneway,
+                give_way: give_way(s) || e.is_some_and(give_way),
+                centre: has_centre_line(line),
+                lift: ribbon_lift(line),
+            });
+            Some(last)
         };
         let mut i = 0;
         while i < dens.len() {
@@ -707,121 +1258,83 @@ pub fn build(
             let b = i - 1;
             let start = if a > 0 { hits[a - 1] } else { None };
             let end = if i < dens.len() { hits[i] } else { None };
-            // Point où la route franchit le bord de la chaussée.
-            let crossing = |hit: Hit, inside: (f64, f64), outside: (f64, f64)| {
-                let (mut lo, mut hi) = (0.0, 1.0);
-                for _ in 0..14 {
-                    let t: f64 = (lo + hi) / 2.0;
-                    let q = (
-                        inside.0 + (outside.0 - inside.0) * t,
-                        inside.1 + (outside.1 - inside.1) * t,
-                    );
-                    if edge_gap(hit, q, &path) < 0.0 {
-                        lo = t;
-                    } else {
-                        hi = t;
+            // Nœud de raccord : sous la chaussée rejointe (au plus 30 m avant
+            // d'en sortir), ou juste au bord.
+            let start_node = start.and_then(|h| {
+                let back = || {
+                    (a.saturating_sub(16)..a)
+                        .rev()
+                        .take_while(|&k| hits[k].is_some())
+                };
+                back()
+                    .find(|&k| node[k] && edge_gap(h, dens[k]) < 0.0)
+                    .or_else(|| back().find(|&k| node[k]))
+                    .or_else(|| (a..(a + 2).min(b + 1)).find(|&k| node[k]))
+                    .map(|k| (h, k))
+            });
+            let end_node = end.and_then(|h| {
+                let ahead = || (i..(i + 16).min(dens.len())).take_while(|&k| hits[k].is_some());
+                ahead()
+                    .find(|&k| node[k] && edge_gap(h, dens[k]) < 0.0)
+                    .or_else(|| ahead().find(|&k| node[k]))
+                    .or_else(|| (b.saturating_sub(1).max(a)..=b).rev().find(|&k| node[k]))
+                    .map(|k| (h, k))
+            });
+            let run_len = polyline_len(&dens[a..=b]);
+            let full = &dens[a.saturating_sub(1)..(b + 2).min(dens.len())];
+            let (mut from, mut to) = (None, None);
+            match (start_node, end_node) {
+                (Some((s, k0)), Some((e, k1))) if run_len <= 2.0 * STUB_LEN + 10.0 => {
+                    if add(dens[k0..=k1].to_vec(), s, Some(e)).is_some() {
+                        continue;
                     }
                 }
-                (
-                    inside.0 + (outside.0 - inside.0) * lo,
-                    inside.1 + (outside.1 - inside.1) * lo,
-                )
-            };
-            let mut poly: Vec<(f64, f64)> = Vec::new();
-            if let Some(h) = start {
-                poly.push(crossing(h, dens[a - 1], dens[a]));
+                (sn, en) => {
+                    if let Some((s, k0)) = sn {
+                        from = add(dens[k0..=b].to_vec(), s, None);
+                    }
+                    if let Some((e, k1)) = en {
+                        let rev: Vec<(f64, f64)> = dens[a..=k1].iter().rev().copied().collect();
+                        to = add(rev, e, None);
+                    }
+                }
             }
-            poly.extend_from_slice(&dens[a..=b]);
-            if let Some(h) = end {
-                poly.push(crossing(h, dens[b + 1], dens[b]));
-            }
-            if poly.len() < 2 {
-                continue;
-            }
-            let len: f64 = poly.windows(2).map(|w| dist(w[0], w[1])).sum();
-            let give_way = |h: Hit| line.info.rank >= 1 && line.info.rank <= main_rank(h);
-            let mut push = |pts: Vec<(f64, f64)>, s: Hit, e: Option<Hit>| {
-                let l: f64 = pts.windows(2).map(|w| dist(w[0], w[1])).sum();
-                if l < 3.0 {
-                    return;
-                }
-                // Une route qui longe le parcours n'en débouche pas.
-                if let Hit::Route(j) = s {
-                    let p = &path.samples[j];
-                    let k = pts
-                        .iter()
-                        .position(|&q| dist(q, pts[0]) > 6.0)
-                        .unwrap_or(pts.len() - 1);
-                    let d = unit((pts[k].0 - pts[0].0, pts[k].1 - pts[0].1));
-                    if (d.0 * p.tangent.0 + d.1 * p.tangent.1).abs() > 0.9 {
-                        return;
-                    }
-                }
-                drafts.push(StubDraft {
-                    pts,
-                    start: s,
-                    end: e,
-                    half_width: (width / 2.0).clamp(1.4, 6.0),
-                    lanes: if matches!(line.kind, LineKind::Road { paved: true, .. }) {
-                        lanes
-                    } else {
-                        0
-                    },
-                    oneway: line.info.oneway,
-                    give_way: give_way(s),
-                });
-            };
-            let cut = |pts: &[(f64, f64)]| {
-                let mut out = vec![pts[0]];
-                let mut l = 0.0;
-                for w in pts.windows(2) {
-                    let d = dist(w[0], w[1]);
-                    if l + d >= STUB_LEN {
-                        let t = (STUB_LEN - l) / d;
-                        out.push((
-                            w[0].0 + (w[1].0 - w[0].0) * t,
-                            w[0].1 + (w[1].1 - w[0].1) * t,
-                        ));
-                        break;
-                    }
-                    l += d;
-                    out.push(w[1]);
-                }
-                out
-            };
-            match (start, end) {
-                (Some(s), Some(e)) if len <= 2.0 * STUB_LEN + 10.0 => push(poly, s, Some(e)),
-                _ => {
-                    if let Some(s) = start {
-                        push(cut(&poly), s, None);
-                    }
-                    if let Some(e) = end {
-                        let rev: Vec<(f64, f64)> = poly.iter().rev().copied().collect();
-                        push(cut(&rev), e, None);
-                    }
-                }
+            // Le reste de la route, drapé sur le sol, à partir du bout des amorces.
+            let l0 = from.map_or(0.0, |q| arc_of(full, q));
+            let l1 = to.map_or(polyline_len(full), |q| arc_of(full, q));
+            if l1 - l0 > 1.0 {
+                ribbons.push(Ribbon::new(li, sub_polyline(full, l0, l1)));
             }
         }
     }
 
-    // Débouchés sur le parcours : rive discontinue, trottoir interrompu.
+    // Débouchés : rive discontinue, trottoir interrompu et accotement réduit
+    // sur le parcours ; pas d'accotement sur l'anneau d'un rond-point.
     let mut cut_sidewalk = [vec![false; ms], vec![false; ms]];
     for d in &drafts {
-        for (hit, pts) in [
-            (Some(d.start), d.pts.clone()),
-            (d.end, d.pts.iter().rev().copied().collect()),
+        let rev: Vec<(f64, f64)> = d.pts.iter().rev().copied().collect();
+        for (hit, pts, inner, sin) in [
+            (Some(d.start), &d.pts, d.inner.0, d.sin.0),
+            (d.end, &rev, d.inner.1, d.sin.1),
         ] {
-            let Some(Hit::Route(j)) = hit else { continue };
+            let Some(hit) = hit else { continue };
+            let mouth = point_at(pts, inner);
+            let hw = d.half_width + FLARE * sin;
+            let j = match hit {
+                Hit::Ring(k) => {
+                    rings[k].mouths.push((mouth, hw));
+                    continue;
+                }
+                Hit::Route(j) => samples
+                    .nearest(mouth.0, mouth.1, 40.0)
+                    .map_or(j, |(_, k)| k),
+            };
             let p = path.samples[j];
-            let k = pts
-                .iter()
-                .position(|&q| dist(q, pts[0]) > 6.0)
-                .unwrap_or(pts.len() - 1);
-            let dir = unit((pts[k].0 - pts[0].0, pts[k].1 - pts[0].1));
+            let b = point_at(pts, inner + 6.0);
+            let dir = unit((b.0 - mouth.0, b.1 - mouth.1));
             let (rx, rn) = p.right();
             let side = usize::from(dir.0 * rx + dir.1 * rn > 0.0);
-            let sin = (dir.0 * p.tangent.1 - dir.1 * p.tangent.0).abs().max(0.3);
-            let reach = ((d.half_width + FLARE) / sin).min(18.0) + 1.0;
+            let reach = (hw / sin).min(18.0) + 1.0;
             let gap = [marks::GAP_LEFT, marks::GAP_RIGHT][side];
             let (lo, hi) = (
                 j.saturating_sub(reach as usize + 1),
@@ -831,8 +1344,9 @@ pub fn build(
                 .iter_mut()
                 .zip(&mut cut_sidewalk[side][lo..hi])
             {
-                if (q.s - p.s).abs() < reach {
+                if (q.s - p.s).abs() < reach && !q.profile.hidden {
                     q.profile.marks |= gap;
+                    q.profile.verge[side] = q.profile.verge[side].min(0.4);
                     *cut = true;
                 }
             }
@@ -922,7 +1436,11 @@ pub fn build(
             let p = &mut path.samples[k];
             let rank = way[k].map_or(0, |(l, _)| osm.lines[l].info.rank);
             let full = if rank >= 3 { 2.0 } else { 1.6 };
-            let w = if pr < 0.05 { 0.0 } else { full * pr };
+            let w = if pr < 0.05 || p.profile.hidden {
+                0.0
+            } else {
+                full * pr
+            };
             p.profile.sidewalk[side] = w;
             if w > 0.0 {
                 p.profile.verge[side] = TOWN_VERGE + (VERGE - TOWN_VERGE) * (1.0 - pr);
@@ -945,51 +1463,96 @@ pub fn build(
     }
     path.compute_racing_line(route);
 
-    // 7. Relief aplani sous le parcours et les ronds-points, puis sous les amorces.
+    // 7. Talus raides au bord du parcours : mur de soutènement côté
+    //    montagne, parapet côté vide.
+    let mut stub_grid = Grid::new(16.0);
+    let mut stub_pts: Vec<((f64, f64), f64)> = Vec::new();
+    for d in &drafts {
+        for &q in d.pts.iter().step_by(2) {
+            stub_grid.insert(q.0, q.1, stub_pts.len() as u32);
+            stub_pts.push((q, d.half_width + FLARE));
+        }
+    }
+    let sides = wall_sides(&path, &samples, &rings, dem, &|q: (f64, f64), r: f64| {
+        let mut hit = false;
+        stub_grid.near(q.0, q.1, r + 8.0, |id| {
+            let (p, hw) = stub_pts[id as usize];
+            if dist(p, q) < hw + r {
+                hit = true;
+            }
+        });
+        hit
+    });
+
+    // 8. Relief aplani sous le parcours et les ronds-points, puis sous les amorces.
     let mut flat = Flatten::new();
     for (k, p) in path.samples.iter().enumerate() {
         if k % 2 != 0 || p.profile.hidden {
             continue;
         }
         let pr = &p.profile;
-        flat.add(FlatPoint {
-            x: p.x,
-            n: p.n,
-            target: p.elevation - 0.35,
-            flat: pr.reach(0).max(pr.reach(1)) + 0.7,
-            blend: 23.0,
-            route: true,
-        });
+        let mut fp = FlatPoint::round(
+            (p.x, p.n),
+            p.elevation - 0.35,
+            pr.reach(0).max(pr.reach(1)) + 0.7,
+            23.0,
+        );
+        fp.route = true;
+        fp.right = p.right();
+        for (side, kinds) in sides.iter().enumerate() {
+            match kinds[k] {
+                Steep::Up => {
+                    fp.flat[side] = pr.reach(side) + 0.2 + WALL_FLAT;
+                    fp.blend[side] = WALL_BLEND;
+                }
+                Steep::Down => {
+                    fp.flat[side] = pr.reach(side) + 0.9;
+                    fp.blend[side] = WALL_BLEND;
+                }
+                Steep::Cliff => {
+                    fp.flat[side] = pr.reach(side) + 2.0;
+                    fp.blend[side] = WALL_BLEND;
+                }
+                Steep::No => {}
+            }
+        }
+        flat.add(fp);
     }
     for r in &rings {
-        let steps = (TAU * r.radius / 2.0).ceil() as usize;
-        for i in 0..steps {
-            let a = i as f64 / steps as f64 * TAU;
-            flat.add(FlatPoint {
-                x: r.center.0 + r.radius * a.cos(),
-                n: r.center.1 + r.radius * a.sin(),
-                target: r.elevation - 0.35,
-                flat: r.half_width + 1.6,
-                blend: 15.0,
-                route: false,
-            });
+        for &q in r.ring.iter().step_by(2) {
+            let mut fp = FlatPoint::round(q, r.height(q.0, q.1) - 0.35, r.half_width + 1.6, 15.0);
+            fp.slope = r.slope;
+            flat.add(fp);
         }
-        flat.add(FlatPoint {
-            x: r.center.0,
-            n: r.center.1,
-            target: r.elevation - 0.35,
-            flat: r.radius,
-            blend: 15.0,
-            route: false,
-        });
+        let mut fp = FlatPoint::round(r.center, r.elevation - 0.35, r.rmax, 15.0);
+        fp.slope = r.slope;
+        flat.add(fp);
     }
-    let level = |h: Hit| match h {
-        Hit::Route(j) => path.samples[j].elevation,
-        Hit::Ring(k) => rings[k].elevation,
+    // Altitude et pente de la chaussée rejointe près de `q`.
+    let grade = |j: usize| {
+        let (a, b) = (j.saturating_sub(3), (j + 3).min(ms - 1));
+        let ds = path.samples[b].s - path.samples[a].s;
+        if ds > 0.5 {
+            (path.samples[b].elevation - path.samples[a].elevation) / ds
+        } else {
+            0.0
+        }
+    };
+    let level = |h: Hit, q: (f64, f64)| -> (f64, (f64, f64)) {
+        match h {
+            Hit::Route(j) => {
+                let j = samples.nearest(q.0, q.1, 40.0).map_or(j, |(_, k)| k);
+                let p = &path.samples[j];
+                let g = grade(j);
+                let along = (q.0 - p.x) * p.tangent.0 + (q.1 - p.n) * p.tangent.1;
+                (p.elevation + g * along, (g * p.tangent.0, g * p.tangent.1))
+            }
+            Hit::Ring(k) => (rings[k].height(q.0, q.1), rings[k].slope),
+        }
     };
     let mut stubs = Vec::with_capacity(drafts.len());
     let mut stub_flat = Vec::new();
-    for d in &drafts {
+    for (si, d) in drafts.iter().enumerate() {
         let mut pts = resample(&d.pts);
         // Léger lissage des angles des nœuds OSM, extrémités fixes.
         for _ in 0..2 {
@@ -1000,47 +1563,76 @@ pub fn build(
             }
         }
         let len = pts.last().map_or(0.0, |p| p.2);
-        let y0 = level(d.start) - 0.03;
-        let y1 = d.end.map(|h| level(h) - 0.03);
+        // Le marquage « cédez le passage » là où toute la largeur est sortie.
+        let clear = |sin: f64, cos: f64| (d.half_width * cos / sin).min(8.0);
         let mut secs = Vec::with_capacity(pts.len());
         for (i, &(x, n, t)) in pts.iter().enumerate() {
             let a = pts[i.saturating_sub(1)];
             let b = pts[(i + 1).min(pts.len() - 1)];
             let tan = unit((b.0 - a.0, b.1 - a.1));
-            let ground = flat.apply(dem(x, n), x, n) + 0.12;
-            let mut y = y0 + (ground - y0) * smoothstep(2.0, 22.0, t);
-            let mut flare = FLARE * (1.0 - smoothstep(0.0, 7.0, t)).powi(2);
-            let mut s = t;
-            if let Some(y1) = y1 {
-                y += (y1 - y) * (1.0 - smoothstep(2.0, 22.0, len - t));
-                flare += FLARE * (1.0 - smoothstep(0.0, 7.0, len - t)).powi(2);
-                s = t.min(len - t);
+            let right = (tan.1, -tan.0);
+            let ground = flat.apply(dem(x, n), x, n);
+            let mut y = ground + d.lift - 0.05;
+            let mut bank = 0.0;
+            let mut s = t - d.inner.0 - clear(d.sin.0, d.cos.0);
+            let mut near = 0.0f64;
+            // Raccord à la chaussée rejointe : même altitude et même pente,
+            // un rien plus bas pour passer dessous.
+            let mut join = |h: Hit, from: f64, sin: f64| -> f64 {
+                let (yh, g) = level(h, (x, n));
+                let w = 1.0 - smoothstep(2.0, 22.0, from);
+                // Chaque amorce à sa hauteur : pas de scintillement là où deux
+                // se chevauchent (carrefour en bout de parcours).
+                let dip = if from < 0.0 { 0.06 } else { 0.04 } + 0.006 * (si % 4) as f64;
+                y += (yh - dip - y) * w;
+                bank += (g.0 * right.0 + g.1 * right.1) * w;
+                near = near.max(w);
+                if from < 0.0 {
+                    FLARE * sin
+                } else {
+                    FLARE * sin * (1.0 - smoothstep(0.0, 7.0, from)).powi(2)
+                }
+            };
+            let mut flare = join(d.start, t - d.inner.0, d.sin.0);
+            if let Some(e) = d.end {
+                let from = len - t - d.inner.1;
+                flare += join(e, from, d.sin.1);
+                s = s.min(from - clear(d.sin.1, d.cos.1));
+            }
+            let mut m = 0;
+            if d.give_way {
+                m |= marks::GIVE_WAY;
+            }
+            if d.centre {
+                m |= marks::CENTRE_DASH;
             }
             secs.push(Section {
                 x,
                 n,
                 elevation: y,
-                right: (tan.1, -tan.0),
+                right,
                 s,
+                bank,
                 profile: Profile {
                     half_width: d.half_width + flare,
                     sidewalk: [0.0; 2],
                     verge: [0.5; 2],
                     lanes: d.lanes,
                     oneway: d.oneway,
-                    marks: if d.give_way { marks::GIVE_WAY } else { 0 },
+                    marks: m,
                     hidden: false,
                 },
             });
-            if i % 2 == 0 {
-                stub_flat.push(FlatPoint {
-                    x,
-                    n,
-                    target: y - 0.2,
-                    flat: d.half_width + flare + 0.5,
-                    blend: 10.0,
-                    route: false,
-                });
+            let under = t < d.inner.0 || (d.end.is_some() && len - t < d.inner.1);
+            if i % 2 == 0 && !under {
+                let mut fp = FlatPoint::round(
+                    (x, n),
+                    y + 0.05 - d.lift - 0.15 * near,
+                    d.half_width + flare + 0.5,
+                    10.0,
+                );
+                fp.slope = (bank * right.0, bank * right.1);
+                stub_flat.push(fp);
             }
         }
         stubs.push(secs);
@@ -1048,13 +1640,175 @@ pub fn build(
     for p in stub_flat {
         flat.add(p);
     }
+
+    // 9. Les murs, une fois le relief aplani connu.
+    let walls = build_walls(&path, &sides, &flat, dem);
     let net = RoadNetwork {
         stubs,
         roundabouts: rings,
+        ribbons,
+        walls,
         flat,
         samples,
     };
     (path, net)
+}
+
+/// Relief au-delà de l'accotement d'un côté de la route.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Steep {
+    No,
+    /// Talus montant : mur de soutènement.
+    Up,
+    /// Paroi très raide : rocher taillé, sans mur.
+    Cliff,
+    /// Talus descendant : parapet.
+    Down,
+}
+
+/// Côtés du parcours (gauche, droite) bordés d'un talus raide, par
+/// échantillon. `busy(q, r)` : une amorce passe-t-elle à moins de `r` de `q` ?
+fn wall_sides(
+    path: &RoadPath,
+    samples: &SampleIndex,
+    rings: &[Roundabout],
+    dem: &dyn Fn(f64, f64) -> f64,
+    busy: &dyn Fn((f64, f64), f64) -> bool,
+) -> [Vec<Steep>; 2] {
+    let ms = path.samples.len();
+    let mut out = [vec![Steep::No; ms], vec![Steep::No; ms]];
+    for (side, out) in out.iter_mut().enumerate() {
+        let sg = if side == 0 { -1.0 } else { 1.0 };
+        let mut kind = vec![Steep::No; ms];
+        let mut allowed = vec![false; ms];
+        for (k, p) in path.samples.iter().enumerate() {
+            let pr = &p.profile;
+            let gap = [marks::GAP_LEFT, marks::GAP_RIGHT][side];
+            if pr.hidden || pr.sidewalk[side] > 0.05 || pr.marks & gap != 0 {
+                continue;
+            }
+            let (rx, rn) = p.right();
+            let w0 = pr.reach(side) + 0.2;
+            let at = |off: f64| (p.x + rx * sg * off, p.n + rn * sg * off);
+            let probe = at(pr.reach(side) + 10.0);
+            let rise = dem(probe.0, probe.1) - p.elevation;
+            let up = rise > WALL_RISE && rise <= CLIFF_RISE;
+            let depth = if up { WALL_DEPTH } else { 1.0 };
+            // Pas dans l'intérieur d'un virage trop serré pour la terrasse.
+            let inner = if side == 0 { p.curvature } else { -p.curvature };
+            if inner > 0.0 && 1.0 / inner < w0 + depth + 5.0 {
+                continue;
+            }
+            // Ni sur une autre portion du parcours (lacets), ni sur une
+            // amorce ou un rond-point.
+            let clear = [w0, w0 + depth * 0.5, w0 + depth + 4.0].iter().all(|&off| {
+                let q = at(off);
+                let other = samples.nearest(q.0, q.1, 30.0).is_some_and(|(d, j)| {
+                    j.abs_diff(k) > 60 && d < path.samples[j].profile.reach(0).max(4.0) + 3.0
+                });
+                !other && !busy(q, 3.0) && rings.iter().all(|r| r.signed(q) > r.half_width + 3.0)
+            });
+            allowed[k] = clear;
+            kind[k] = if up {
+                Steep::Up
+            } else if rise > CLIFF_RISE {
+                Steep::Cliff
+            } else if -rise > WALL_RISE {
+                Steep::Down
+            } else {
+                Steep::No
+            };
+        }
+        for want in [Steep::Up, Steep::Cliff, Steep::Down] {
+            let mut on: Vec<bool> = kind
+                .iter()
+                .zip(&allowed)
+                .map(|(&k, &a)| k == want && a)
+                .collect();
+            clean_runs(&mut on, 8, 12);
+            for (o, a) in on.iter_mut().zip(&allowed) {
+                *o &= *a;
+            }
+            clean_runs(&mut on, 0, 12);
+            for (o, &b) in out.iter_mut().zip(&on) {
+                if b {
+                    *o = want;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Murs le long des talus raides : la terrasse d'un mur de soutènement
+/// rejoint le relief aplani, un parapet fait 0,75 m.
+fn build_walls(
+    path: &RoadPath,
+    sides: &[Vec<Steep>; 2],
+    flat: &Flatten,
+    dem: &dyn Fn(f64, f64) -> f64,
+) -> Vec<Wall> {
+    let mut walls = Vec::new();
+    for (side, kinds) in sides.iter().enumerate() {
+        let sg = if side == 0 { -1.0 } else { 1.0 };
+        let mut k = 0;
+        while k < kinds.len() {
+            let want = kinds[k];
+            if want == Steep::No || want == Steep::Cliff {
+                k += 1;
+                continue;
+            }
+            let a = k;
+            while k < kinds.len() && kinds[k] == want {
+                k += 1;
+            }
+            let retaining = want == Steep::Up;
+            let depth = if retaining { WALL_DEPTH } else { 0.45 };
+            let mut idx: Vec<usize> = (a..k).step_by(2).chain(std::iter::once(k - 1)).collect();
+            idx.dedup();
+            let mut pts: Vec<WallPoint> = idx
+                .iter()
+                .map(|&j| {
+                    let p = &path.samples[j];
+                    let (rx, rn) = p.right();
+                    let out = (rx * sg, rn * sg);
+                    let w0 = p.profile.reach(side) + if retaining { 0.2 } else { 0.25 };
+                    let top = if retaining {
+                        let q = (p.x + out.0 * (w0 + depth), p.n + out.1 * (w0 + depth));
+                        (flat.apply(dem(q.0, q.1), q.0, q.1) - p.elevation).clamp(1.0, 4.0)
+                    } else {
+                        0.75
+                    };
+                    WallPoint {
+                        x: p.x + out.0 * w0,
+                        n: p.n + out.1 * w0,
+                        out,
+                        base: p.elevation - 0.6,
+                        top: p.elevation + top,
+                        s: p.s,
+                    }
+                })
+                .collect();
+            if retaining {
+                // Couronnement régulier, abaissé aux extrémités.
+                let rel: Vec<f64> = pts.iter().map(|w| w.top - w.base).collect();
+                let smooth = gaussian(&rel, 3.0);
+                let (s0, s1) = (pts[0].s, pts[pts.len() - 1].s);
+                for (w, h) in pts.iter_mut().zip(smooth) {
+                    let end = smoothstep(0.0, 8.0, (w.s - s0).min(s1 - w.s));
+                    w.top = w.base + 1.4 + (h - 1.4) * end;
+                }
+            }
+            if pts.len() >= 2 {
+                walls.push(Wall {
+                    pts,
+                    depth,
+                    retaining,
+                });
+            }
+        }
+    }
+    walls
 }
 
 impl RoadNetwork {
@@ -1070,22 +1824,30 @@ impl RoadNetwork {
         }
         for r in &self.roundabouts {
             let mesh = cells.entry(key(r.center.0, r.center.1)).or_default();
-            let steps = (TAU * r.radius).ceil().max(24.0) as usize;
-            let secs: Vec<Section> = (0..=steps)
+            let m = r.ring.len();
+            let mut s = 0.0;
+            let secs: Vec<Section> = (0..=m)
                 .map(|i| {
-                    let a = i as f64 / steps as f64 * TAU;
-                    let (c, s) = (a.cos(), a.sin());
+                    let k = i % m;
+                    if i > 0 {
+                        s += dist(r.ring[i - 1], r.ring[k]);
+                    }
+                    let q = r.ring[k];
+                    let out = r.outward(k);
+                    let rim = r.edge(k, r.half_width);
+                    let mouth = r.mouths.iter().any(|&(p, w)| dist(rim, p) < w + 3.0);
                     Section {
-                        x: r.center.0 + r.radius * c,
-                        n: r.center.1 + r.radius * s,
-                        elevation: r.elevation,
+                        x: q.0,
+                        n: q.1,
+                        elevation: r.height(q.0, q.1),
                         // Sens antihoraire : la droite est vers l'extérieur.
-                        right: (c, s),
-                        s: a * r.radius,
+                        right: out,
+                        s,
+                        bank: r.slope.0 * out.0 + r.slope.1 * out.1,
                         profile: Profile {
                             half_width: r.half_width,
                             sidewalk: [r.apron, 0.0],
-                            verge: [0.0, 1.2],
+                            verge: [0.0, if mouth { 0.0 } else { 1.2 }],
                             lanes: r.lanes,
                             oneway: true,
                             marks: marks::EDGE_LEFT,
@@ -1105,6 +1867,24 @@ impl RoadNetwork {
             .collect()
     }
 
+    /// Murs de soutènement et parapets, par cases de 300 m.
+    /// UV : abscisse le long du mur et hauteur (m) ; COLOR.r : 0 parement,
+    /// 0,5 couronnement, 1 terrasse plantée.
+    pub fn wall_meshes(&self, base: f64) -> Vec<MeshData> {
+        let mut cells: HashMap<(i64, i64), MeshData> = HashMap::new();
+        for w in &self.walls {
+            let f = &w.pts[0];
+            let key = ((f.x / 300.0).floor() as i64, (f.n / 300.0).floor() as i64);
+            push_wall(cells.entry(key).or_default(), w, base);
+        }
+        let mut keys: Vec<_> = cells.keys().copied().collect();
+        keys.sort();
+        keys.into_iter()
+            .filter_map(|k| cells.remove(&k))
+            .filter(|m| !m.is_empty())
+            .collect()
+    }
+
     /// Arbustes sur les îlots des ronds-points (tampon MultiMesh).
     pub fn island_bushes(&self, base: f64) -> Instances {
         let mut out = Instances::default();
@@ -1114,18 +1894,19 @@ impl RoadNetwork {
                 continue;
             }
             let count = ((ri * ri * 0.25) as usize).clamp(3, 24);
+            let m = r.ring.len();
             for i in 0..count {
                 let h = |c: u32| crate::raster::rand01(k as i64, i as i64, 900 + i64::from(c));
-                let a = h(1) * TAU;
-                let d = (ri - 1.2) * h(2).sqrt();
-                let y = dome(r, d) + r.elevation - base;
+                let e = r.edge((h(1) * m as f64) as usize % m, -(r.half_width + r.apron));
+                let f = h(2).sqrt() * (1.0 - 1.2 / ri).max(0.0);
+                let (x, n) = (
+                    r.center.0 + (e.0 - r.center.0) * f,
+                    r.center.1 + (e.1 - r.center.1) * f,
+                );
+                let y = dome(r, f) + r.height(x, n) - base;
                 let size = 0.8 + h(3) * 1.0;
                 out.push(
-                    [
-                        r.center.0 + d * a.cos(),
-                        y - 0.1,
-                        -(r.center.1 + d * a.sin()),
-                    ],
+                    [x, y - 0.1, -n],
                     h(4) * TAU,
                     size * 1.3,
                     size,
@@ -1137,50 +1918,132 @@ impl RoadNetwork {
     }
 }
 
-/// Hauteur de l'îlot au-dessus de la chaussée à `d` mètres du centre.
-fn dome(r: &Roundabout, d: f64) -> f64 {
-    let ri = r.island();
-    let t = (d / ri).clamp(0.0, 1.0);
-    0.05 + KERB + (ri * 0.06).min(0.9) * (1.0 - t * t)
+/// Hauteur de l'îlot au-dessus de la chaussée, à la fraction `f` du centre
+/// vers le bord.
+fn dome(r: &Roundabout, f: f64) -> f64 {
+    let f = f.clamp(0.0, 1.0);
+    0.05 + KERB + (r.island() * 0.06).min(0.9) * (1.0 - f * f)
 }
 
-/// Îlot central : pelouse bombée bordée de pavés.
+/// Îlot central : pelouse bombée qui épouse le contour intérieur de l'anneau,
+/// avec une jupe sous son bord.
 fn island(mesh: &mut MeshData, r: &Roundabout, base: f64) {
-    let ri = r.island();
-    let steps = (TAU * ri / 1.5).ceil().max(16.0) as usize;
-    let rings = [0.0, 0.35, 0.7, 1.0];
+    let m = r.ring.len();
+    let c = r.center;
+    let edge: Vec<(f64, f64)> = (0..m)
+        .map(|i| r.edge(i, -(r.half_width + r.apron - 0.1)))
+        .collect();
+    let fractions = [0.0, 0.35, 0.7, 1.0];
     let first = mesh.positions.len() as i32;
-    for (ring_i, &f) in rings.iter().enumerate() {
-        let count = if ring_i == 0 { 1 } else { steps };
-        for i in 0..count {
-            let a = i as f64 / steps as f64 * TAU;
-            let d = ri * f;
-            let (x, n) = (r.center.0 + d * a.cos(), r.center.1 + d * a.sin());
-            mesh.positions.push([
-                x as f32,
-                (r.elevation - base + dome(r, d)) as f32,
-                -n as f32,
-            ]);
-            mesh.normals.push([0.0, 1.0, 0.0]);
-            mesh.uvs.push([x as f32, n as f32]);
-            mesh.uv2s.push([0.0, 1.0]);
-            mesh.colors
-                .push([0.0, 0.0, 0.0, f32::from(marks::GRASS) / 255.0]);
+    let mut vertex = |p: (f64, f64), y: f64| {
+        mesh.positions
+            .push([p.0 as f32, (y - base) as f32, -p.1 as f32]);
+        mesh.normals.push([0.0, 1.0, 0.0]);
+        mesh.uvs.push([p.0 as f32, p.1 as f32]);
+        mesh.uv2s.push([0.0, 1.0]);
+        mesh.colors
+            .push([0.0, 0.0, 0.0, f32::from(marks::GRASS) / 255.0]);
+    };
+    vertex(c, r.height(c.0, c.1) + dome(r, 0.0));
+    for &f in &fractions[1..] {
+        for e in &edge {
+            let p = (c.0 + (e.0 - c.0) * f, c.1 + (e.1 - c.1) * f);
+            vertex(p, r.height(p.0, p.1) + dome(r, f));
         }
     }
+    for e in &edge {
+        vertex(*e, r.height(e.0, e.1) - 0.2);
+    }
     let up = [0.0, 1.0, 0.0];
-    let s = steps as i32;
+    let s = m as i32;
     for i in 0..s {
         mesh.push_tri(first, first + 1 + i, first + 1 + (i + 1) % s, up);
     }
-    for ring_i in 1..rings.len() as i32 - 1 {
+    for ring_i in 1..fractions.len() as i32 {
         let a = first + 1 + (ring_i - 1) * s;
         let b = a + s;
         for i in 0..s {
             let j = (i + 1) % s;
-            mesh.push_tri(a + i, b + i, a + j, up);
-            mesh.push_tri(a + j, b + i, b + j, up);
+            let normal = if ring_i == fractions.len() as i32 - 1 {
+                let e = edge[i as usize];
+                [e.0 - c.0, 0.0, -(e.1 - c.1)]
+            } else {
+                up
+            };
+            mesh.push_tri(a + i, b + i, a + j, normal);
+            mesh.push_tri(a + j, b + i, b + j, normal);
         }
+    }
+}
+
+/// Mur : parement côté route, couronnement, terrasse (soutènement) ou
+/// dessus (parapet), et face arrière.
+fn push_wall(mesh: &mut MeshData, w: &Wall, base: f64) {
+    let coping = 0.5f64.min(w.depth);
+    // Profils en travers : (recul depuis la face, haut ?) ; chaque face a
+    // ses propres sommets pour des arêtes franches.
+    type Edge = (f64, bool);
+    let faces: [(Edge, Edge, f32); 4] = [
+        ((0.0, false), (0.0, true), 0.0),
+        ((0.0, true), (coping, true), 0.5),
+        ((coping, true), (w.depth, true), 1.0),
+        ((w.depth, true), (w.depth, false), 0.0),
+    ];
+    for (fi, &(p0, p1, zone)) in faces.iter().enumerate() {
+        if fi == 2 && w.depth - coping < 0.05 {
+            continue;
+        }
+        let first = mesh.positions.len() as i32;
+        for wp in &w.pts {
+            for (back, high) in [p0, p1] {
+                let (x, n) = (wp.x + wp.out.0 * back, wp.n + wp.out.1 * back);
+                let y = if high { wp.top } else { wp.base };
+                mesh.positions
+                    .push([x as f32, (y - base) as f32, -n as f32]);
+                let v = if fi == 0 || fi == 3 {
+                    y - wp.base
+                } else {
+                    back
+                };
+                mesh.uvs.push([wp.s as f32, v as f32]);
+                mesh.colors.push([zone, 0.0, 0.0, 1.0]);
+                mesh.normals.push(match fi {
+                    0 => [-wp.out.0 as f32, 0.0, wp.out.1 as f32],
+                    3 => [wp.out.0 as f32, 0.0, -wp.out.1 as f32],
+                    _ => [0.0, 1.0, 0.0],
+                });
+            }
+        }
+        let wp = &w.pts[0];
+        let normal = match fi {
+            0 => [-wp.out.0, 0.0, wp.out.1],
+            3 => [wp.out.0, 0.0, -wp.out.1],
+            _ => [0.0, 1.0, 0.0],
+        };
+        for k in 0..w.pts.len() as i32 - 1 {
+            let (a, b) = (first + 2 * k, first + 2 * k + 2);
+            mesh.push_tri(a, b, a + 1, normal);
+            mesh.push_tri(a + 1, b, b + 1, normal);
+        }
+    }
+    // Bouts du mur.
+    let last = w.pts.len() - 1;
+    for (wp, other) in [(&w.pts[0], &w.pts[1]), (&w.pts[last], &w.pts[last - 1])] {
+        // Face tournée à l'opposé du reste du mur.
+        let t = unit((wp.x - other.x, wp.n - other.n));
+        let first = mesh.positions.len() as i32;
+        for (back, high) in [(0.0, false), (0.0, true), (w.depth, true), (w.depth, false)] {
+            let (x, n) = (wp.x + wp.out.0 * back, wp.n + wp.out.1 * back);
+            let y = if high { wp.top } else { wp.base };
+            mesh.positions
+                .push([x as f32, (y - base) as f32, -n as f32]);
+            mesh.uvs.push([back as f32, (y - wp.base) as f32]);
+            mesh.colors.push([0.0, 0.0, 0.0, 1.0]);
+            mesh.normals.push([t.0 as f32, 0.0, -t.1 as f32]);
+        }
+        let normal = [t.0, 0.0, -t.1];
+        mesh.push_tri(first, first + 1, first + 2, normal);
+        mesh.push_tri(first, first + 2, first + 3, normal);
     }
 }
 
@@ -1210,7 +2073,8 @@ mod tests {
     }
 
     /// Route nord-sud de 400 m (GPX décalé de 4 m), une rue qui en part
-    /// vers l'est à 150 m, et un rond-point de 15 m de rayon à 300 m.
+    /// vers l'est à 150 m, un chemin non raccordé qui frôle la route vers
+    /// 60 m, et un rond-point de 15 m de rayon à 300 m.
     fn scene() -> (Route, OsmData) {
         let main: Vec<(f64, f64)> = (0..=57).map(|i| (0.0, i as f64 * 5.0)).collect();
         let side = [(0.0, 150.0), (80.0, 150.0)];
@@ -1221,17 +2085,20 @@ mod tests {
             })
             .collect();
         let exit: Vec<(f64, f64)> = (0..=20).map(|i| (0.0, 315.0 + i as f64 * 5.0)).collect();
+        let lane = [(14.0, 30.0), (2.6, 60.0), (14.0, 90.0)];
         let json = format!(
             r#"{{"elements":[
             {{"type":"way","id":1,"tags":{{"highway":"secondary","sidewalk":"right"}},"geometry":{}}},
             {{"type":"way","id":2,"tags":{{"highway":"residential"}},"geometry":{}}},
             {{"type":"way","id":3,"tags":{{"highway":"secondary","junction":"roundabout"}},"geometry":{}}},
-            {{"type":"way","id":4,"tags":{{"highway":"secondary"}},"geometry":{}}}
+            {{"type":"way","id":4,"tags":{{"highway":"secondary"}},"geometry":{}}},
+            {{"type":"way","id":5,"tags":{{"highway":"service"}},"geometry":{}}}
             ]}}"#,
             geometry(&main),
             geometry(&side),
             geometry(&ring),
-            geometry(&exit)
+            geometry(&exit),
+            geometry(&lane)
         );
         let mut raw = Vec::new();
         for i in 0..=80 {
@@ -1256,7 +2123,7 @@ mod tests {
     fn snaps_to_the_osm_road_and_reads_its_profile() {
         let (route, osm) = scene();
         let (path, _) = build(&route, &osm, &|_, _| 500.0);
-        let p = path.samples.iter().find(|s| s.d > 80.0).unwrap();
+        let p = path.samples.iter().find(|s| s.d > 120.0).unwrap();
         let road_x = osm.lines[0].points[3].0;
         assert!(
             (p.x - road_x).abs() < 0.5,
@@ -1270,10 +2137,18 @@ mod tests {
         assert!(p.profile.marks & marks::CENTRE_DASH != 0);
         assert!(p.profile.sidewalk[1] > 1.5 && p.profile.sidewalk[0] == 0.0);
         assert!(p.profile.marks & marks::EDGE_RIGHT == 0);
+        // Le cycliste reste sur la chaussée, à distance de la bordure.
+        for s in &path.samples {
+            assert!(
+                s.offset <= s.profile.half_width - 0.3 + 1e-9,
+                "{}",
+                s.offset
+            );
+        }
     }
 
     #[test]
-    fn side_street_gets_a_short_stub_and_a_gap() {
+    fn side_street_starts_under_the_road_and_continues_as_a_ribbon() {
         let (route, osm) = scene();
         let (path, net) = build(&route, &osm, &|_, _| 500.0);
         let (sx, sn) = osm.lines[1].points[0];
@@ -1284,24 +2159,51 @@ mod tests {
             .collect();
         assert_eq!(east.len(), 1, "{:?}", net.stubs.len());
         let stub = east[0];
-        let len = stub.last().unwrap().s;
-        assert!((len - (STUB_LEN)).abs() < 1.5, "{len}");
-        assert!(stub[0].profile.marks & marks::GIVE_WAY != 0);
-        assert!(stub[0].profile.half_width > stub.last().unwrap().profile.half_width + 2.0);
+        // Elle part du nœud de jonction, sous la chaussée, un peu plus bas.
         let mouth = path
             .samples
             .iter()
             .min_by(|a, b| (a.n - sn).abs().total_cmp(&(b.n - sn).abs()))
             .unwrap();
+        assert!((stub[0].x - mouth.x).abs() < mouth.profile.half_width);
+        assert!(stub[0].elevation < mouth.elevation);
+        let end = stub.last().unwrap();
+        assert!((end.s - STUB_LEN).abs() < 1.5, "{}", end.s);
+        assert!(stub[0].profile.marks & marks::GIVE_WAY != 0);
+        assert!(stub[0].profile.half_width > end.profile.half_width + 2.0);
         assert!(mouth.profile.marks & marks::GAP_RIGHT != 0);
         assert_eq!(
             mouth.profile.sidewalk[1], 0.0,
             "trottoir interrompu au débouché"
         );
+        // La suite de la rue est drapée à partir du bout de l'amorce.
+        let rest: Vec<_> = net.ribbons.iter().filter(|r| r.line == 1).collect();
+        assert_eq!(rest.len(), 1);
+        let first = rest[0].points[0];
+        assert!(dist(first, (end.x, end.n)) < 0.5, "{first:?}");
         // Le sol est aplani sous l'amorce.
         let (w, _) = net.flat.weight(sx + 20.0, sn).unwrap();
         assert!(w > 0.99);
         assert!(net.flat.near_other(sx + 20.0, sn, 0.5));
+    }
+
+    #[test]
+    fn a_road_that_only_passes_by_gets_no_stub() {
+        let (route, osm) = scene();
+        let (_, net) = build(&route, &osm, &|_, _| 500.0);
+        assert!(
+            net.stubs
+                .iter()
+                .all(|s| !(25.0..95.0).contains(&s[0].n) || s[0].x < 0.0),
+            "{:?}",
+            net.stubs
+                .iter()
+                .map(|s| (s[0].x, s[0].n))
+                .collect::<Vec<_>>()
+        );
+        let lane: Vec<_> = net.ribbons.iter().filter(|r| r.line == 4).collect();
+        assert_eq!(lane.len(), 1);
+        assert_eq!(lane[0].points, osm.lines[4].points);
     }
 
     #[test]
@@ -1311,6 +2213,11 @@ mod tests {
         assert_eq!(net.roundabouts.len(), 1);
         let r = &net.roundabouts[0];
         assert!((r.radius - 15.0).abs() < 0.8, "{}", r.radius);
+        assert!(r.ring.len() > 80);
+        assert!(r
+            .ring
+            .iter()
+            .all(|&p| (dist(p, r.center) - 15.0).abs() < 0.6));
         assert!(r.island() > 3.0);
         assert!(path.samples.iter().any(|p| p.profile.hidden));
         assert!(path
@@ -1324,6 +2231,101 @@ mod tests {
         assert!(d > 10.0 && d < 20.0, "{d}");
         assert!(!net.meshes(500.0).is_empty());
         assert!(net.island_bushes(500.0).count() >= 3);
+        // Ni l'anneau ni ses entrées ne sont redessinés par-dessus.
+        assert!(net.ribbons.iter().all(|r| r.line != 2));
+    }
+
+    #[test]
+    fn oval_ring_keeps_its_shape_and_slope() {
+        let ellipse: Vec<(f64, f64)> = (0..40)
+            .map(|i| {
+                let a = -(i as f64) / 40.0 * TAU;
+                (20.0 * a.cos(), 12.0 * a.sin())
+            })
+            .collect();
+        let (area, c) = area_centroid(&ellipse);
+        assert!(area < 0.0, "sens horaire");
+        let mut ring = ellipse.clone();
+        ring.reverse();
+        let mut r = Roundabout {
+            center: c,
+            ring: smooth_ring(&ring),
+            radius: 16.0,
+            rmax: 20.0,
+            half_width: 3.5,
+            apron: 1.0,
+            elevation: 0.0,
+            slope: (0.0, 0.0),
+            lanes: 1,
+            mouths: Vec::new(),
+        };
+        assert!((r.signed((0.0, 0.0)) + 11.9).abs() < 0.3);
+        assert!((r.signed((25.0, 0.0)) - 5.0).abs() < 0.3);
+        assert!((r.signed((0.0, 15.0)) - 3.0).abs() < 0.3);
+        // L'extérieur est à droite du sens de circulation.
+        let o = r.outward(0);
+        let p = r.ring[0];
+        assert!(dist((p.0 + o.0, p.1 + o.1), c) > dist(p, c));
+        // Plan ajusté sur un parcours qui monte vers le nord à 5 %.
+        let samples: Vec<PathSample> = (0..80)
+            .map(|i| {
+                let n = -40.0 + i as f64;
+                PathSample {
+                    x: 2.0,
+                    n,
+                    elevation: 100.0 + 0.05 * n,
+                    d: 0.0,
+                    s: 0.0,
+                    tangent: (0.0, 1.0),
+                    curvature: 0.0,
+                    offset: 0.0,
+                    profile: Profile::default(),
+                }
+            })
+            .collect();
+        r.fit_plane(&samples);
+        assert!((r.elevation - 100.0).abs() < 0.1, "{}", r.elevation);
+        assert!(r.slope.1 > 0.035 && r.slope.0.abs() < 0.01, "{:?}", r.slope);
+    }
+
+    #[test]
+    fn steep_slopes_get_retaining_walls_or_parapets() {
+        let (route, osm) = scene();
+        // Montagne à l'ouest du parcours : mur de soutènement à gauche.
+        let x0 = osm.lines[0].points[0].0;
+        let up = |x: f64, _: f64| 500.0 + (x0 - x - 6.0).max(0.0) * 0.9;
+        let (path, net) = build(&route, &osm, &up);
+        let walls: Vec<_> = net.walls.iter().filter(|w| w.retaining).collect();
+        assert!(!walls.is_empty());
+        let p = path.samples.iter().find(|s| s.d > 100.0).unwrap();
+        let w = walls
+            .iter()
+            .flat_map(|w| &w.pts)
+            .min_by(|a, b| (a.n - p.n).abs().total_cmp(&(b.n - p.n).abs()))
+            .unwrap();
+        assert!(w.x < p.x - p.profile.reach(0), "{}", w.x);
+        assert!(w.top - p.elevation > 1.0, "{}", w.top - p.elevation);
+        // Le sol reste au niveau de la route juste derrière le mur, caché
+        // par la terrasse.
+        let behind = w.x - 2.0;
+        let g = net.flat.apply(up(behind, w.n), behind, w.n);
+        assert!((g - (p.elevation - 0.35)).abs() < 0.05, "{g}");
+        assert!(!net.wall_meshes(500.0).is_empty());
+        // Pas de mur contre le rond-point.
+        let c = net.roundabouts[0].center;
+        assert!(walls
+            .iter()
+            .flat_map(|w| &w.pts)
+            .all(|q| dist((q.x, q.n), c) > 21.0));
+
+        // Ravin à l'ouest : parapet.
+        let down = |x: f64, _: f64| 500.0 - (x0 - x - 6.0).max(0.0) * 0.9;
+        let (_, net) = build(&route, &osm, &down);
+        assert!(net.walls.iter().any(|w| !w.retaining));
+        assert!(net.walls.iter().all(|w| !w.retaining));
+        // Plat : aucun mur.
+        let (_, net) = build(&route, &osm, &|_, _| 500.0);
+        assert!(net.walls.is_empty());
     }
 
     #[test]
