@@ -6,6 +6,7 @@ members = [
     "crates/velo-store",
     "crates/velo-strava",
     "crates/velo-probe",
+    "crates/velo-ble",
     "crates/velo-godot",
 ]
 
