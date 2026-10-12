@@ -11,6 +11,8 @@ pub struct MeshData {
     /// Second jeu d'UV (facultatif : vide ou un par sommet).
     pub uv2s: Vec<[f32; 2]>,
     pub colors: Vec<[f32; 4]>,
+    /// CUSTOM0 en octets (facultatif : vide ou un par sommet).
+    pub customs: Vec<[u8; 4]>,
     pub indices: Vec<i32>,
 }
 

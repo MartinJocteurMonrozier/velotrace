@@ -1,6 +1,8 @@
 // Sol texturé par l'image aérienne (ou sa couleur de repli), avec un grain
-// de détail près de la caméra qui masque le flou de l'image. Les pentes très
-// raides (falaises, talus taillés au bord des routes) deviennent rocheuses.
+// de détail près de la caméra qui masque le flou de l'image. Au bord des
+// chaussées, l'image laisse place au sol détaillé des accotements (herbe,
+// ville, cailloux : ground.gdshaderinc), qui s'y raccorde sans couture. Les
+// pentes très raides (falaises, talus taillés) deviennent rocheuses.
 // Les grands carrés lointains se retirent là où un carré détaillé est chargé :
 // le masque contient un texel par carré de 512 m.
 shader_type spatial;
@@ -13,6 +15,11 @@ uniform sampler2D near_mask : filter_nearest, repeat_disable;
 uniform vec4 mask_rect = vec4(0.0, 0.0, 1.0, 1.0);
 uniform float detail_strength = 0.55;
 uniform vec3 rock : source_color = vec3(0.50, 0.48, 0.45);
+// Carte du sol du carré : nature (RGB) et proximité d'une chaussée (A).
+uniform sampler2D ground_tex : filter_linear_mipmap, repeat_disable;
+uniform bool has_ground = false;
+
+#include "res://shaders/ground.gdshaderinc"
 
 varying vec2 world_xz;
 varying vec3 world_n;
@@ -23,23 +30,6 @@ void vertex() {
 	world_xz = w.xz;
 	world_y = w.y;
 	world_n = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
-}
-
-float hash(vec2 p) {
-	p = fract(p * vec2(123.34, 456.21));
-	p += dot(p, p + 45.32);
-	return fract(p.x * p.y);
-}
-
-float vnoise(vec2 p) {
-	vec2 i = floor(p);
-	vec2 f = fract(p);
-	f = f * f * (3.0 - 2.0 * f);
-	float a = hash(i);
-	float b = hash(i + vec2(1.0, 0.0));
-	float c = hash(i + vec2(0.0, 1.0));
-	float d = hash(i + vec2(1.0, 1.0));
-	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
 void fragment() {
@@ -62,18 +52,32 @@ void fragment() {
 		vec3 tint = mix(vec3(1.0), vec3(0.92, 1.06, 0.88), green * (b - 0.5) * 2.0);
 		col *= mix(vec3(1.0), (0.62 + 0.76 * d) * tint, fade);
 	}
+	float rough = 1.0;
+	if (has_ground) {
+		vec4 g = texture(ground_tex, UV);
+		// Lisière irrégulière entre le sol détaillé et l'image.
+		float edge = g.a + (g_fbm(world_xz * 0.12, 50u) - 0.5) * 0.6;
+		float near = smoothstep(0.35, 0.6, edge);
+		if (near > 0.0) {
+			float fine = 1.0 - smoothstep(0.02, 0.12, length(fwidth(world_xz)));
+			GroundSample s = ground_sample(world_xz, g.rgb, fine);
+			col = mix(col, s.col, near);
+			rough = mix(rough, s.rough, near);
+			NORMAL = normalize(mix(NORMAL, g_bump(NORMAL, VERTEX, s.h * fine), near));
+		}
+	}
 	// Roche : strates horizontales et fissures, plus claire que l'image.
 	float steep = 1.0 - smoothstep(0.58, 0.74, normalize(world_n).y);
 	if (steep > 0.0) {
 		vec2 q = vec2(world_xz.x + world_xz.y, world_y);
-		float strata = vnoise(vec2(q.x * 0.08, q.y * 1.3)) * 0.6 + vnoise(q * vec2(0.5, 2.5)) * 0.4;
-		float crack = smoothstep(0.82, 0.9, vnoise(q * vec2(0.9, 0.25)));
+		float strata = g_noise(vec2(q.x * 0.08, q.y * 1.3), 60u) * 0.6 + g_noise(q * vec2(0.5, 2.5), 61u) * 0.4;
+		float crack = smoothstep(0.82, 0.9, g_noise(q * vec2(0.9, 0.25), 62u));
 		vec3 r = rock * (0.72 + 0.5 * strata) * (1.0 - 0.35 * crack);
 		float lum = dot(col, vec3(0.3, 0.55, 0.15));
 		r *= 0.75 + 0.5 * clamp(lum * 2.5, 0.0, 1.0);
 		col = mix(col, r, steep * 0.9);
 	}
 	ALBEDO = col;
-	ROUGHNESS = 1.0;
+	ROUGHNESS = rough;
 	SPECULAR = 0.15;
 }

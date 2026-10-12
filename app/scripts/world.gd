@@ -9,6 +9,7 @@ const TILE_CELLS := 20
 const TERRAIN_MARGIN := 450.0
 const ROAD_SHADER := preload("res://shaders/road.gdshader")
 const WALLS_SHADER := preload("res://shaders/walls.gdshader")
+const CLIFF_SHADER := preload("res://shaders/cliff.gdshader")
 const RealWorld := preload("res://scripts/real_world.gd")
 const Vegetation := preload("res://scripts/vegetation.gd")
 const Race := preload("res://scripts/race.gd")
@@ -111,7 +112,8 @@ static func _terrain(ride: Object, base_elev: float) -> Node3D:
 
 
 ## Chaussée lissée (un point par mètre) en tronçons, amorces des routes
-## adjacentes, ronds-points, murs le long des talus raides, et balises de bord.
+## adjacentes, ronds-points, murs et falaises le long des talus raides, et
+## balises de bord.
 static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
 	var root := Node3D.new()
 	root.name = "Route"
@@ -131,6 +133,15 @@ static func _road(ride: Object, base_elev: float, quality: int) -> Node3D:
 			var mi := MeshInstance3D.new()
 			mi.mesh = mesh
 			mi.material_override = wall_mat
+			root.add_child(mi)
+	var cliffs: Array = ride.road_cliffs(base_elev)
+	if not cliffs.is_empty():
+		var cliff_mat := ShaderMaterial.new()
+		cliff_mat.shader = CLIFF_SHADER
+		for mesh: Mesh in cliffs:
+			var mi := MeshInstance3D.new()
+			mi.mesh = mesh
+			mi.material_override = cliff_mat
 			root.add_child(mi)
 	var bushes: PackedFloat32Array = ride.road_bushes(base_elev)
 	if not bushes.is_empty():

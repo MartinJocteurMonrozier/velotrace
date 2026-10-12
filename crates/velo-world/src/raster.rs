@@ -1,7 +1,7 @@
 //! Petites images couvrant un carré du sol : carte d'occupation (OSM)
 //! rastérisée, couleurs de repli quand il n'y a pas d'image aérienne.
 
-use crate::osm::{Cover, LineKind, OsmData};
+use crate::osm::{Area, Cover, LineKind, OsmData};
 
 /// Grille carrée alignée sur le repère local : la ligne 0 est au nord.
 #[derive(Debug, Clone)]
@@ -108,11 +108,8 @@ impl<T: Copy> Grid<T> {
 
 /// Carte d'occupation d'un carré du sol à partir d'OSM.
 pub fn cover_grid(osm: &OsmData, x0: f64, n1: f64, extent_m: f64, size: usize) -> Grid<u8> {
-    let mut g = Grid::new(x0, n1, extent_m, size, Cover::None as u8);
+    let mut g = land_grid(osm, x0, n1, extent_m, size);
     let (min, max) = ((x0, n1 - extent_m), (x0 + extent_m, n1));
-    for a in osm.areas.iter().filter(|a| a.bbox.intersects(min, max)) {
-        g.fill_rings(&a.rings, a.cover as u8);
-    }
     for l in osm.lines.iter().filter(|l| l.bbox.intersects(min, max)) {
         let c = match l.kind {
             LineKind::Road { paved: true, .. } => Cover::RoadPaved,
@@ -125,6 +122,70 @@ pub fn cover_grid(osm: &OsmData, x0: f64, n1: f64, extent_m: f64, size: usize) -
         g.fill_rings(std::slice::from_ref(&b.ring), Cover::Building as u8);
     }
     g
+}
+
+/// Occupation du sol par les seules zones OSM (prés, forêts, villes…), sans
+/// les routes ni les bâtiments : ce qui borde une route.
+pub fn land_grid(osm: &OsmData, x0: f64, n1: f64, extent_m: f64, size: usize) -> Grid<u8> {
+    let mut g = Grid::new(x0, n1, extent_m, size, Cover::None as u8);
+    let (min, max) = ((x0, n1 - extent_m), (x0 + extent_m, n1));
+    for a in osm.areas.iter().filter(|a| a.bbox.intersects(min, max)) {
+        g.fill_rings(&a.rings, a.cover as u8);
+    }
+    g
+}
+
+/// Comme `land_grid`, en un seul point, parmi les zones `areas` (celles
+/// qui touchent le voisinage) : la dernière qui le contient l'emporte.
+pub fn land_at(areas: &[&Area], x: f64, n: f64) -> Cover {
+    let mut cover = Cover::None;
+    for a in areas.iter().filter(|a| a.bbox.intersects((x, n), (x, n))) {
+        let mut inside = false;
+        for ring in &a.rings {
+            for w in ring.windows(2) {
+                let ((ax, an), (bx, bn)) = (w[0], w[1]);
+                if (an <= n) != (bn <= n) && x < ax + (n - an) / (bn - an) * (bx - ax) {
+                    inside = !inside;
+                }
+            }
+        }
+        if inside {
+            cover = a.cover;
+        }
+    }
+    cover
+}
+
+/// Nature du sol au bord des routes, pour sa texture détaillée : parts
+/// d'herbe, de revêtement (ville) et de cailloux, le reste étant de la terre
+/// (sous-bois). `built` : proximité des bâtiments (0 à 1), où le sol est
+/// plutôt revêtu ; `slope` : pente du relief (m/m).
+pub fn ground_mix(cover: Cover, built: f64, altitude: f64, slope: f64, x: f64, n: f64) -> [f64; 3] {
+    // Éboulis et rocher sur les versants raides et en haute montagne.
+    let steep = smoothstep(0.7, 1.15, slope + (noise(x * 0.05, n * 0.05) - 0.5) * 0.3);
+    let alpine = smoothstep(2100.0, 2600.0, altitude) * 0.5;
+    let stony = (steep + alpine).min(1.0);
+    let [grass, paved, stone] = match cover {
+        Cover::Urban | Cover::Building | Cover::RoadPaved => [0.3, 0.7, 0.0],
+        Cover::Rock | Cover::Glacier | Cover::RoadUnpaved | Cover::Water => [0.1, 0.0, 0.9],
+        Cover::ForestBroad | Cover::ForestMixed | Cover::ForestNeedle => [0.3, 0.0, 0.1],
+        Cover::Scrub => [0.6, 0.0, 0.2],
+        Cover::None | Cover::Meadow | Cover::Farmland | Cover::Orchard => [0.9, 0.0, 0.05],
+    };
+    // Autour des maisons, cours et parkings remplacent une partie du pré,
+    // mais pas sur les talus.
+    let town = built * 0.7 * (1.0 - smoothstep(0.2, 0.45, slope)) * (1.0 - paved);
+    let (grass, paved, stone) = (
+        grass * (1.0 - town),
+        paved + (1.0 - paved) * town,
+        stone * (1.0 - town),
+    );
+    // La terre et l'herbe cèdent la place aux cailloux, pas le revêtement.
+    [
+        grass * (1.0 - stony),
+        paved,
+        stone + (1.0 - stone - paved) * stony,
+    ]
 }
 
 fn hash2(a: i64, b: i64) -> u64 {
@@ -228,6 +289,52 @@ pub fn looks_like_trees(rgb: [u8; 3]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ground_follows_cover_slope_and_houses() {
+        let sum = |w: [f64; 3]| w.iter().sum::<f64>();
+        let meadow = ground_mix(Cover::Meadow, 0.0, 900.0, 0.1, 10.0, 20.0);
+        assert!(meadow[0] > 0.8, "{meadow:?}");
+        let town = ground_mix(Cover::Urban, 0.0, 900.0, 0.1, 10.0, 20.0);
+        assert!(town[1] > 0.6, "{town:?}");
+        let scree = ground_mix(Cover::Meadow, 0.0, 900.0, 1.5, 10.0, 20.0);
+        assert!(scree[2] > 0.8, "{scree:?}");
+        let forest = ground_mix(Cover::ForestNeedle, 0.0, 900.0, 0.1, 10.0, 20.0);
+        assert!(1.0 - sum(forest) > 0.5, "{forest:?}");
+        // Près des maisons, le sol se revêt, sauf sur un talus.
+        let yard = ground_mix(Cover::None, 1.0, 900.0, 0.05, 10.0, 20.0);
+        assert!(yard[1] > 0.6, "{yard:?}");
+        let bank = ground_mix(Cover::None, 1.0, 900.0, 0.6, 10.0, 20.0);
+        assert!(bank[1] < 0.05, "{bank:?}");
+        for w in [meadow, town, scree, forest, yard, bank] {
+            assert!(w.iter().all(|&v| v >= 0.0) && sum(w) <= 1.0 + 1e-9, "{w:?}");
+        }
+    }
+
+    #[test]
+    fn land_at_matches_the_grid() {
+        let ring = vec![
+            (10.0, 10.0),
+            (60.0, 10.0),
+            (60.0, 60.0),
+            (10.0, 60.0),
+            (10.0, 10.0),
+        ];
+        let osm = OsmData {
+            areas: vec![Area {
+                cover: Cover::ForestMixed,
+                bbox: crate::osm::BBox::of(ring.iter().copied()),
+                rings: vec![ring],
+                still_water: false,
+            }],
+            ..Default::default()
+        };
+        let g = land_grid(&osm, 0.0, 100.0, 100.0, 20);
+        for (x, n) in [(30.0, 30.0), (5.0, 30.0), (55.0, 58.0), (70.0, 70.0)] {
+            let areas: Vec<&Area> = osm.areas.iter().collect();
+            assert_eq!(land_at(&areas, x, n) as u8, g.at(x, n).unwrap(), "{x} {n}");
+        }
+    }
 
     #[test]
     fn fills_a_square_with_a_hole() {
