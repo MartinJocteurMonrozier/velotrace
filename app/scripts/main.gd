@@ -5,7 +5,7 @@ extends Node3D
 ##   --gpx <fichier>        démarre directement sur ce parcours
 ##   --puissance <W>        cycliste virtuel à puissance fixe (sinon cadence et Click auto)
 ##   --accelere <x>         accélère le temps (essais)
-##   --camera <0|1|2>       caméra arrière, de côté ou haute
+##   --camera <0|1|2|3>     caméra proche (par défaut), arrière, de côté ou haute
 ##   --capture <png>        enregistre une capture puis quitte
 ##   --capture-apres <s>    temps de sortie avant la capture (8 s par défaut)
 ##   --decor <reel|cache|simple>  décor réel téléchargé, réel depuis le cache, ou simplifié
@@ -30,6 +30,18 @@ const QUALITY_NAMES := ["Basse", "Moyenne", "Haute"]
 const RENDER_SCALE := [0.67, 0.85, 1.0]
 ## Délai maximal d'attente des carrés détaillés autour du départ.
 const NEAR_WAIT_S := 45.0
+## Nombre de caméras (touche C).
+const CAMERA_MODES := 4
+## Caméra proche : distance derrière le cycliste et hauteur.
+const CHASE_DIST := 2.9
+const CHASE_HEIGHT := 1.45
+## Dans les virages, la caméra pivote vers l'extérieur de la vitesse de virage
+## (lissée) multipliée par CHASE_TURN_S, puis suit avec un retard de CHASE_LAG_S ;
+## l'écart reste sous CHASE_MAX_LAG (rad).
+const CHASE_TURN_S := 1.6
+const CHASE_RATE_S := 0.6
+const CHASE_LAG_S := 0.6
+const CHASE_MAX_LAG := 0.65
 
 var ride: Node
 var _base_elev := 0.0
@@ -61,6 +73,9 @@ var _loading_phase := ""
 var _loading_time := 0.0
 var _decor_note := ""
 var _lean := 0.0
+var _chase_yaw := 0.0
+var _prev_yaw := 0.0
+var _yaw_rate := 0.0
 
 
 func _ready() -> void:
@@ -94,7 +109,7 @@ func _parse_args() -> void:
 			"--accelere":
 				Engine.time_scale = val.to_float()
 			"--camera":
-				_camera_mode = val.to_int() % 3
+				_camera_mode = posmod(val.to_int(), CAMERA_MODES)
 			"--capture":
 				_capture_path = val
 			"--capture-apres":
@@ -381,6 +396,7 @@ func _place_cyclist(delta: float, snap: bool) -> void:
 	_lean = lean_target if snap else lerpf(_lean, lean_target, clampf(delta * 3.0, 0.0, 1.0))
 	var basis := Basis.looking_at(dir.normalized(), Vector3.UP) * Basis(Vector3(0.0, 0.0, 1.0), _lean)
 	_cyclist.transform = Transform3D(basis, pos + Vector3(0.0, 0.05, 0.0))
+	_cyclist.set_state(t.speed_kmh / 3.6, t.power_w, t.grade_pct / 100.0, t.rider_kg, delta)
 	_cyclist.animate(t.speed_kmh / 3.6, t.cadence_rpm, delta)
 	_update_camera(pos, dir, delta, snap)
 	if _real_world:
@@ -397,15 +413,36 @@ func _update_camera(pos: Vector3, dir: Vector3, delta: float, snap: bool) -> voi
 	var side := flat.cross(Vector3.UP)
 	var eye: Vector3
 	var look := pos + Vector3(0.0, 1.1, 0.0)
+	# Cap suivi avec retard : dans les virages, la caméra proche glisse vers
+	# l'extérieur et montre le cycliste un peu de côté.
+	var yaw := atan2(-flat.x, -flat.z)
+	if snap:
+		_chase_yaw = yaw
+		_prev_yaw = yaw
+		_yaw_rate = 0.0
+	elif delta > 0.0:
+		var rate := wrapf(yaw - _prev_yaw, -PI, PI) / delta
+		_prev_yaw = yaw
+		_yaw_rate = lerpf(_yaw_rate, rate, 1.0 - exp(-delta / CHASE_RATE_S))
+		var aim := yaw - clampf(_yaw_rate * CHASE_TURN_S, -CHASE_MAX_LAG, CHASE_MAX_LAG)
+		_chase_yaw += wrapf(aim - _chase_yaw, -PI, PI) * (1.0 - exp(-delta / CHASE_LAG_S))
+	_chase_yaw = yaw - clampf(wrapf(yaw - _chase_yaw, -PI, PI), -CHASE_MAX_LAG, CHASE_MAX_LAG)
 	match _camera_mode:
 		0:
-			eye = pos - flat * 6.5 + Vector3(0.0, 2.6, 0.0)
+			var chase := Vector3(-sin(_chase_yaw), 0.0, -cos(_chase_yaw))
+			eye = pos - chase * CHASE_DIST + Vector3(0.0, CHASE_HEIGHT, 0.0)
+			look = pos + dir.normalized() * 3.0 + Vector3(0.0, 0.55, 0.0)
 		1:
+			eye = pos - flat * 6.5 + Vector3(0.0, 2.6, 0.0)
+		2:
 			eye = pos + side * 5.0 + flat * 1.5 + Vector3(0.0, 1.4, 0.0)
 		_:
 			eye = pos - flat * 25.0 + Vector3(0.0, 14.0, 0.0)
 	var target := Transform3D(Basis.looking_at(look - eye, Vector3.UP), eye)
-	if snap:
+	if _camera_mode == 0 and not snap:
+		# Déjà lissée par le cap : un suivi serré évite que la caméra décroche.
+		_camera.transform = _camera.transform.interpolate_with(target, clampf(delta * 12.0, 0.0, 1.0))
+	elif snap:
 		_camera.transform = target
 	else:
 		_camera.transform = _camera.transform.interpolate_with(target, clampf(delta * 4.0, 0.0, 1.0))
@@ -427,7 +464,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			_auto_shift = not _auto_shift
 			ride.set_auto_shift(_auto_shift)
 		KEY_C:
-			_camera_mode = (_camera_mode + 1) % 3
+			_camera_mode = (_camera_mode + 1) % CAMERA_MODES
 		KEY_SPACE:
 			var paused: bool = ride.is_running()
 			ride.set_paused(paused)
