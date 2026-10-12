@@ -6,6 +6,14 @@ pub struct Profile {
     pub rider: Rider,
     pub bike: Bike,
     pub trainer: Trainer,
+    #[serde(default)]
+    pub app: AppSettings,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AppSettings {
+    /// Mode test : home trainer, cadence, FC et Click simulés, sans Bluetooth.
+    pub test_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -23,7 +31,7 @@ pub struct Bike {
     pub chainrings: Vec<u32>,
     /// Pignons, du plus petit au plus grand.
     pub cassette: Vec<u32>,
-    /// Circonférence de la roue en mètres (700×28c ≈ 2,136 m).
+    /// Circonférence de la roue en mètres (700×28c ≈ 2,136 m, 700×40c ≈ 2,200 m).
     pub wheel_circumference_m: f64,
     pub cda_m2: f64,
     pub crr: f64,
@@ -44,7 +52,7 @@ pub struct Trainer {
 }
 
 impl Profile {
-    /// Profil de Martin : 52/36, 11-34 11v, 59 kg + 11 kg, Click V2.
+    /// Profil de Martin : 52/36, 11-34 11v, pneus 700×40c, 59 kg + 11 kg, Click V2.
     pub fn martin() -> Self {
         Self {
             rider: Rider {
@@ -57,7 +65,7 @@ impl Profile {
                 weight_kg: 11.0,
                 chainrings: vec![36, 52],
                 cassette: vec![11, 13, 15, 17, 19, 21, 23, 25, 27, 30, 34],
-                wheel_circumference_m: 2.136,
+                wheel_circumference_m: 2.200,
                 cda_m2: 0.32,
                 crr: 0.004,
                 drivetrain_efficiency: 0.975,
@@ -69,6 +77,7 @@ impl Profile {
                 min_grade: -0.10,
                 max_grade: 0.20,
             },
+            app: AppSettings::default(),
         }
     }
 
