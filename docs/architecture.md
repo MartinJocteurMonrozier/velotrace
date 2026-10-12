@@ -138,7 +138,7 @@ L'**avatar** : modèle de cycliste et de vélo libres de droits (ou réalisés s
 |---|---|
 | Plateaux | 52 / 36 |
 | Cassette | 11‑34, 11 vitesses (11‑13‑15‑17‑19‑21‑23‑25‑27‑30‑34, étagement Shimano supposé) |
-| Pneus | 700×28c supposé (circonférence 2 136 mm), à confirmer |
+| Pneus | 700×40c (circonférence 2 200 mm) |
 | Poids | cycliste 59 kg + vélo 11 kg = 70 kg |
 | Changement de vitesse | **mode B**, virtuel avec les **Zwift Click V2** |
 | Fréquence cardiaque | montre Garmin en mode « diffusion de la FC » (BLE HRS) |
@@ -159,3 +159,14 @@ Tout ce qui est réglable passe par l'interface, rien n'est codé en dur. Les r�
 - **Sorties** : historique, export .FIT, **envoi direct sur Strava** (connexion OAuth une fois, puis envoi automatique ou manuel en fin de sortie ; il faudra créer une « application API » Strava gratuite pour obtenir les identifiants).
 
 Interface : thème sombre moderne, menus Godot avec composants maison (cartes, onglets, graphiques), utilisable à la souris et aux Click.
+
+## 11. Mode test (appareils simulés)
+
+Un interrupteur dans les réglages remplace tout le matériel par des appareils simulés, pour développer et essayer l'application sans home trainer :
+
+- **Home trainer simulé** : il accepte la prise de contrôle FTMS et les consignes de pente, et renvoie vitesse, cadence et puissance comme le D500.
+- **Capteur de cadence et FC simulés** : la fréquence cardiaque suit la puissance avec un temps de réponse réaliste.
+- **Click simulés** : touches du clavier ou boutons à l'écran, plus un mode automatique où le cycliste virtuel change de vitesse pour garder sa puissance dans une plage.
+- **Cycliste virtuel** : soit à puissance imposée (réglable au clavier), soit à cadence imposée ; dans ce cas la puissance dépend du rapport et de la pente, ce qui permet de tester tout le ressenti des vitesses.
+
+Le simulateur fabrique les mêmes trames Bluetooth que le vrai matériel et les décode avec le même code : seul le lien radio n'est pas testé.

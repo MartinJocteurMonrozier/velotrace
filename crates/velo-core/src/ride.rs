@@ -1,6 +1,7 @@
 //! Boucle de simulation d'une sortie, indépendante du rendu et du matériel.
 
 use crate::config::Profile;
+use crate::devices::{DeviceEvent, Shift};
 use crate::gearing::{Gear, VirtualGearbox};
 use crate::physics::{self, Params};
 use crate::protocol::ControlCommand;
@@ -25,6 +26,7 @@ pub struct Telemetry {
     pub elevation_m: f64,
     pub gear: Gear,
     pub gear_index: usize,
+    pub heart_rate_bpm: Option<u16>,
     pub finished: bool,
 }
 
@@ -37,6 +39,9 @@ pub struct Ride {
     distance_m: f64,
     speed_ms: f64,
     last: Inputs,
+    heart_rate_bpm: Option<u16>,
+    /// La cadence du capteur dédié prime sur celle du trainer.
+    has_cadence_sensor: bool,
 }
 
 impl Ride {
@@ -53,11 +58,43 @@ impl Ride {
             distance_m: 0.0,
             speed_ms: 0.0,
             last: Inputs::default(),
+            heart_rate_bpm: None,
+            has_cadence_sensor: false,
         }
     }
 
     pub fn finished(&self) -> bool {
         self.distance_m >= self.route.length_m()
+    }
+
+    /// Prend en compte un événement d'appareil (réel ou simulé).
+    pub fn handle(&mut self, event: &DeviceEvent) {
+        match event {
+            DeviceEvent::Trainer(d) => {
+                if let Some(w) = d.power_w {
+                    self.last.power_w = w as f64;
+                }
+                if let (Some(rpm), false) = (d.cadence_rpm, self.has_cadence_sensor) {
+                    self.last.cadence_rpm = rpm;
+                }
+            }
+            DeviceEvent::Cadence(rpm) => {
+                self.has_cadence_sensor = true;
+                self.last.cadence_rpm = *rpm;
+            }
+            DeviceEvent::HeartRate(bpm) => self.heart_rate_bpm = Some(*bpm),
+            DeviceEvent::Shift(Shift::Up) => {
+                self.gearbox.shift_up();
+            }
+            DeviceEvent::Shift(Shift::Down) => {
+                self.gearbox.shift_down();
+            }
+        }
+    }
+
+    /// Avance de `dt` secondes avec les dernières mesures reçues.
+    pub fn step(&mut self, dt: f64) -> Telemetry {
+        self.tick(self.last, dt)
     }
 
     /// Avance la simulation de `dt` secondes.
@@ -85,6 +122,7 @@ impl Ride {
             elevation_m: point.elevation_m,
             gear: self.gearbox.current(),
             gear_index: self.gearbox.index(),
+            heart_rate_bpm: self.heart_rate_bpm,
             finished: self.finished(),
         }
     }

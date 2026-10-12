@@ -12,12 +12,14 @@ Architecture et plan : [docs/architecture.md](docs/architecture.md).
 - la transmission et le changement de vitesse virtuel (Zwift Click) ;
 - le modèle physique et le calcul de la pente envoyée au home trainer ;
 - la lecture d'un GPX, le rééchantillonnage et le lissage des pentes ;
-- l'encodage et le décodage des trames BLE FTMS, CSC et HRS.
+- l'encodage et le décodage des trames BLE FTMS, CSC et HRS ;
+- le **mode test**, qui simule le home trainer, le capteur de cadence, la FC et les Zwift Click.
 
 ## Essayer
 
 ```sh
 cargo test
 cargo run -p velo-core --example gears                     # rapports virtuels
-cargo run -p velo-core --example simulate -- sortie.gpx 200  # sortie simulée à 200 W
+cargo run -p velo-core --example simulate -- sortie.gpx              # mode test, cadence 88 rpm et Click automatiques
+cargo run -p velo-core --example simulate -- sortie.gpx --power 200  # mode test à 200 W
 ```
