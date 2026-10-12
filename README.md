@@ -67,9 +67,9 @@ Là où la montagne est raide au bord de la route, un mur de soutènement en moe
 
 Au-delà de 45°, une falaise sculptée se dresse au bord de la route : paroi en relief jusqu'à 30 m de haut, avec ses bancs inclinés en corniches, ses ravines, ses surplombs, ses coulures, ses lichens et un rebord herbeux qui rejoint la pente.
 
-![Arche d'arrivée et barrières](docs/captures/arrivee.jpg)
+![Portique d'arrivée, barrières et public](docs/captures/arrivee.jpg)
 
-Comme sur les grands tours, une arche gonflable marque le départ, le pied et le sommet de chaque ascension (à pois, avec sa longueur, sa pente moyenne et l'altitude du sommet) et l'arrivée, avec des barrières à leurs abords. Une ascension compte à partir de 80 m de dénivelé à 3 % de moyenne.
+Comme sur le Tour de France : arche gonflable bleue et blanche au départ, banderole à pois au pied de chaque ascension (longueur, pente moyenne et catégorie, de la 4e à hors catégorie), arche à pois « Grand prix de la montagne » au sommet, banderoles 3 km et 2 km, flamme rouge au dernier kilomètre et, à l'arrivée, un portique en treillis métallique avec son chronomètre, sa banderole « ARRIVÉE » et une ligne peinte à damier. Des barrières habillées de bâches imprimées (slogans inventés, aucune vraie marque) bordent ces endroits, les 300 derniers mètres en entier, avec du public derrière. Une ascension compte à partir de 80 m de dénivelé à 3 % de moyenne.
 
 Près du parcours, des sapins et des feuillus poussent là où OSM indique une forêt ou là où l'image aérienne est vert sombre (version détaillée de près, simplifiée au-delà) ; les bâtiments sont extrudés à leur hauteur avec des fenêtres et restent visibles au loin, les routes et rivières sont drapées sur le relief, les lacs posés à plat. Près de la route, l'herbe des accotements et un grain de détail sur le sol masquent le flou des images aériennes.
 
