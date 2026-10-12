@@ -188,9 +188,86 @@ pub fn parse_heart_rate(data: &[u8]) -> Result<u16, ParseError> {
     }
 }
 
+/// Zwift Click V2 (et Zwift Ride) : protocole propriétaire, connu par
+/// rétro-ingénierie (makinolo.com, qdomyos-zwift, BikeControl).
+///
+/// Après l'écriture de « RideOn » sur la caractéristique d'écriture, le
+/// boîtier envoie des messages `0x23` contenant un champ protobuf 1 : une
+/// table de 32 bits où **un bit à 0 signifie bouton appuyé**.
+pub mod zwift {
+    /// Service des contrôleurs Zwift (anciens firmwares) ; les récents
+    /// annoncent aussi le service 16 bits 0xFC82.
+    pub const SERVICE: &str = "00000001-19ca-4651-86e5-fa29dcdd09d1";
+    pub const SERVICE_16: u16 = 0xFC82;
+    /// Suffixe commun aux caractéristiques Zwift.
+    pub const UUID_SUFFIX: &str = "-19ca-4651-86e5-fa29dcdd09d1";
+    pub const ASYNC_PREFIX: &str = "00000002";
+    pub const SYNC_RX_PREFIX: &str = "00000003";
+    pub const SYNC_TX_PREFIX: &str = "00000004";
+    pub const MANUFACTURER_ID: u16 = 0x094A;
+    pub const RIDE_ON: &[u8] = b"RideOn";
+    pub const KEYPAD_STATUS: u8 = 0x23;
+
+    pub const SHIFT_UP_LEFT: u32 = 0x0200;
+    pub const SHIFT_DOWN_LEFT: u32 = 0x0400;
+    pub const SHIFT_UP_RIGHT: u32 = 0x2000;
+    pub const SHIFT_DOWN_RIGHT: u32 = 0x4000;
+
+    /// Table des boutons d'un message `0x23`, ou `None` pour un autre message.
+    pub fn keypad_bitmap(data: &[u8]) -> Option<u32> {
+        let (&kind, rest) = data.split_first()?;
+        if kind != KEYPAD_STATUS {
+            return None;
+        }
+        let (&tag, rest) = rest.split_first()?;
+        if tag != 0x08 {
+            return None;
+        }
+        let mut value: u64 = 0;
+        for (i, &b) in rest.iter().take(10).enumerate() {
+            value |= ((b & 0x7F) as u64) << (7 * i);
+            if b & 0x80 == 0 {
+                return Some(value as u32);
+            }
+        }
+        None
+    }
+
+    /// Boutons qui viennent d'être enfoncés entre deux tables.
+    pub fn newly_pressed(previous: u32, current: u32) -> u32 {
+        // Bit à 1 avant et à 0 maintenant : appui.
+        previous & !current
+    }
+
+    /// Changements de vitesse déclenchés par un nouvel appui.
+    pub fn shifts(previous: u32, current: u32) -> (bool, bool) {
+        let pressed = newly_pressed(previous, current);
+        (
+            pressed & (SHIFT_UP_LEFT | SHIFT_UP_RIGHT) != 0,
+            pressed & (SHIFT_DOWN_LEFT | SHIFT_DOWN_RIGHT) != 0,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zwift_keypad_bitmap_and_presses() {
+        // Exemple publié par makinolo.com : flèche gauche appuyée.
+        let msg = [0x23, 0x08, 0xfe, 0xff, 0xff, 0xff, 0x0f, 0x12, 0x18];
+        assert_eq!(zwift::keypad_bitmap(&msg), Some(0xFFFF_FFFE));
+        assert_eq!(zwift::keypad_bitmap(&[0x19, 0x08, 0x00]), None);
+
+        let idle = 0xFFFF_FFFF;
+        let up_right = idle & !zwift::SHIFT_UP_RIGHT;
+        assert_eq!(zwift::shifts(idle, up_right), (true, false));
+        // Bouton maintenu : pas de nouvel appui.
+        assert_eq!(zwift::shifts(up_right, up_right), (false, false));
+        let down_left = idle & !zwift::SHIFT_DOWN_LEFT;
+        assert_eq!(zwift::shifts(up_right, down_left), (false, true));
+    }
 
     #[test]
     fn indoor_bike_data_speed_cadence_power() {
