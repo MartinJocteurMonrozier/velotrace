@@ -61,6 +61,24 @@ impl Recorder {
         true
     }
 
+    /// Dernière seconde, entamée, à la fin de la sortie : sans elle, les
+    /// derniers mètres avant la ligne manqueraient au bilan.
+    pub fn push_last(&mut self, t: &Telemetry, point: &RoutePoint) {
+        if self.push(t, point) {
+            return;
+        }
+        if let Some(last) = self.samples.last() {
+            if t.distance_m > last.distance_m + 0.5 {
+                self.next_t = last.t_s + 1.0;
+                let at = Telemetry {
+                    elapsed_s: self.next_t,
+                    ..*t
+                };
+                self.push(&at, point);
+            }
+        }
+    }
+
     pub fn summary(&self, ftp_w: f64) -> Summary {
         summarize(&self.samples, ftp_w)
     }

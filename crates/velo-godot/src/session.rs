@@ -298,6 +298,9 @@ impl Session {
 
     /// Fin de sortie : plus d'ERG, le home trainer repasse à plat.
     pub fn finish(&mut self) {
+        let t = self.ride.telemetry();
+        let point = self.ride.route.point_at(t.distance_m);
+        self.recorder.push_last(&t, &point);
         let p = &self.ride.profile;
         let cw_kg_m = 0.5 * 1.2 * p.bike.cda_m2;
         let crr = p.bike.crr;
