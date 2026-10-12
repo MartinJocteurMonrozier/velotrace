@@ -1,0 +1,13 @@
+[package]
+name = "velo-store"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Carnet de sorties de velotrace : base SQLite locale pour le suivi au long cours"
+license = "MIT"
+
+[dependencies]
+velo-core = { path = "../velo-core" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+dirs = "6"
+thiserror = "1"
