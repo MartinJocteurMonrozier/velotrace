@@ -67,7 +67,7 @@ impl Frame {
             dot(d, self.axes[2]),
         ]
     }
-    fn to_global(&self, l: V3) -> V3 {
+    fn global(&self, l: V3) -> V3 {
         add(
             self.origin,
             add(
@@ -275,7 +275,7 @@ fn frame_aabb(f: &Frame, half: V3) -> (V3, V3) {
             if i & 2 == 0 { -half[1] } else { half[1] },
             if i & 4 == 0 { -half[2] } else { half[2] },
         ];
-        pts.push(f.to_global(l));
+        pts.push(f.global(l));
     }
     aabb_of(&pts, 0.0)
 }
@@ -675,8 +675,8 @@ impl Sdf {
                 mat = prim.mat;
                 mat_w = 1.0;
             } else if prim.op != Op::Intersect {
-                for i in 0..4 {
-                    col[i] += (prim.color[i] - col[i]) * w;
+                for (c, p) in col.iter_mut().zip(prim.color) {
+                    *c += (p - *c) * w;
                 }
                 if w > 0.5 || (w > 0.0 && mat_w < 0.0) {
                     mat = prim.mat;
