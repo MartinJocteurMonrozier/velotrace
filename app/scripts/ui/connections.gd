@@ -253,7 +253,7 @@ func _refresh(full: bool) -> void:
 	var st: String = ad.get("state", "starting")
 	var msg: String = ad.get("message", "")
 	if test:
-		UI.set_dot(_adapter_dot, UI.TEAL)
+		UI.set_dot(_adapter_dot, UI.OK)
 		_adapter_label.text = "Mode test : appareils simulés"
 	else:
 		UI.set_dot(_adapter_dot, UI.link_color(st))
@@ -293,7 +293,7 @@ func _update_card(role: String, d: Dictionary, rem: Dictionary, live: Dictionary
 	var state: String = d.get("state", "disconnected" if not rem.is_empty() else "")
 	var connected := test or state == "connected"
 	if test:
-		UI.set_dot(c.dot, UI.TEAL)
+		UI.set_dot(c.dot, UI.OK)
 		c.device.text = "Appareil simulé"
 		c.state.text = "Simulé par l'application"
 		c.state.remove_theme_color_override("font_color")

@@ -41,7 +41,7 @@ godot --path app                   # ou ouvrir app/project.godot dans l'éditeur
 
 **Paramètres** : cycliste (poids, FTP et zones), vélo (plateaux, cassette, roue, CdA, Crr, rendement), home trainer (rapport physique, difficulté des pentes, pentes limites), affichage et décor (caméra, décor, qualité, Click automatiques) et Strava. Tout est enregistré dans `~/.config/velotrace/profile.toml` (`%APPDATA%\velotrace\profile.toml` sous Windows).
 
-![Choix de l'entraînement : séance paramétrée](docs/captures/app-entrainement.jpg)
+![Choix de l'entraînement : sortie libre](docs/captures/app-entrainement.jpg)
 
 **Entraînement**, quatre modes :
 

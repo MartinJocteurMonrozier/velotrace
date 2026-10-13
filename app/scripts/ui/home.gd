@@ -241,7 +241,7 @@ func _refresh_route() -> void:
 		bottom = minf(bottom, p.y)
 	UI.set_tile(_tiles.top, Fmt.num(top))
 	UI.set_tile(_tiles.bottom, Fmt.num(bottom))
-	_chart.set_series([{"name": "Altitude", "color": UI.TEAL, "kind": "area", "points": profile_points(pts, dist), "format": "m"}])
+	_chart.set_series([{"name": "Altitude", "color": UI.SECOND, "kind": "area", "points": profile_points(pts, dist), "format": "m"}])
 
 
 ## Profil d'altitude (x en km, y en m) réduit à 600 points au plus.

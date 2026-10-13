@@ -159,7 +159,7 @@ func enter() -> void:
 		_route_label.text = "%s · %s · D+ %s m" % [App.ride.route_name(), Fmt.km(App.ride.route_length_m()), Fmt.num(App.ride.route_elevation_gain_m())]
 		var pts := Home.profile_points(App.ride.route_points(), App.ride.route_distances())
 		for c in _route_charts:
-			c.set_series([{"name": "Altitude", "color": UI.TEAL, "kind": "area", "points": pts}])
+			c.set_series([{"name": "Altitude", "color": UI.SECOND, "kind": "area", "points": pts}])
 	else:
 		_route_label.text = "Aucun parcours choisi"
 	_presets = App.ride.workout_presets()
@@ -654,8 +654,8 @@ func _update_opponents() -> void:
 	var cols := PackedColorArray()
 	for i in vals.size():
 		pts.append(Vector2(i + 1, vals[i]))
-		cols.append(UI.TEAL.darkened(0.35 * (1.0 - float(i) / maxf(1.0, vals.size() - 1))))
-	_opp_chart.set_series([{"name": "Coureurs", "color": UI.TEAL, "kind": "bar", "points": pts, "colors": cols}])
+		cols.append(UI.SECOND.darkened(0.35 * (1.0 - float(i) / maxf(1.0, vals.size() - 1))))
+	_opp_chart.set_series([{"name": "Coureurs", "color": UI.SECOND, "kind": "bar", "points": pts, "colors": cols}])
 	var me := _ftp() / kg
 	_opp_chart.set_reference_lines([{"y": me, "color": UI.TEXT_DIM, "label": "Ta FTP : %s W/kg" % Fmt.num(me, 1)}])
 

@@ -300,7 +300,7 @@ func _refresh_extras() -> void:
 		var rings: Variant = App.ride.profile_get("bike.chainrings")
 		var cogs: Variant = App.ride.profile_get("bike.cassette")
 		var series := []
-		var colors := [UI.TEAL, UI.ACCENT, UI.INFO]
+		var colors := [UI.SECOND, UI.ACCENT, UI.INFO]
 		if rings is Array and cogs is Array:
 			for i in rings.size():
 				var pts := PackedVector2Array()
