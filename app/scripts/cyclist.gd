@@ -1,8 +1,11 @@
 extends Node3D
-## Cycliste et vélo de route en maillages procéduraux, pédalage synchronisé
-## sur la cadence et posture choisie selon la télémétrie : pied à terre,
-## assis sur les cocottes, aéro dans le bas du cintre, en danseuse.
+## Cycliste et vélo de route, pédalage synchronisé sur la cadence et posture
+## choisie selon la télémétrie : pied à terre, assis sur les cocottes, aéro
+## dans le bas du cintre, en danseuse. Le vélo est en maillages procéduraux ;
+## le corps (rider_body.gd) suit les cibles articulaires calculées ici.
 ## L'avant du vélo pointe vers -Z, la droite du cycliste vers +X.
+
+const RiderBody := preload("res://scripts/rider_body.gd")
 
 ## Postures, dans l'ordre des tableaux P_* plus bas.
 enum Posture { ARRET, ASSIS, AERO, DANSEUSE }
@@ -120,13 +123,6 @@ const KITS := [
 	[Color(0.42, 0.12, 0.62), Color(0.18, 0.05, 0.30), Color(0.98, 0.62, 0.20), Color(0.10, 0.10, 0.12)],
 	[Color(0.98, 0.55, 0.70), Color(0.35, 0.10, 0.20), Color(0.10, 0.10, 0.10), Color(0.10, 0.10, 0.12)],
 ]
-const BIB := Color(0.03, 0.03, 0.035)
-const BIB_BAND := Color(0.16, 0.16, 0.18)
-const SKIN := Color(0.84, 0.62, 0.48)
-const SOCK := Color(0.96, 0.96, 0.96)
-const LENS := Color(0.08, 0.14, 0.28)
-const HAIR := Color(0.2, 0.13, 0.08)
-
 ## Tenue choisie (indice dans KITS), à fixer avant l'ajout à la scène.
 var kit := 0
 var _jersey: Color
@@ -149,7 +145,6 @@ var _wheel_angle := 0.0
 
 var _m_paint := _material(0.3, 0.05, true)
 var _m_matte := _material(0.8, 0.0)
-var _m_skin := _material(0.6, 0.0)
 var _m_gloss := _material(0.25, 0.0)
 var _m_metal := _material(0.3, 0.8)
 
@@ -157,14 +152,7 @@ var _bike: Node3D
 var _wheels: Array[Node3D] = []
 var _crankset: Node3D
 var _pedals: Array[Node3D] = []
-var _torso: MeshInstance3D
-var _neck: MeshInstance3D
-var _head: MeshInstance3D
-var _thighs: Array[MeshInstance3D] = []
-var _shins: Array[MeshInstance3D] = []
-var _feet: Array[MeshInstance3D] = []
-var _upper_arms: Array[MeshInstance3D] = []
-var _forearms: Array[MeshInstance3D] = []
+var _body: RiderBody
 
 
 func _ready() -> void:
@@ -190,27 +178,9 @@ func _ready() -> void:
 		var p := _instance(pedal)
 		_bike.add_child(p)
 		_pedals.append(p)
-
-	_torso = _instance(_cached("_torso_mesh", _torso_mesh))
-	_neck = _instance(_cached("_neck_mesh", _neck_mesh))
-	_head = _instance(_cached("_head_mesh", _head_mesh))
-	add_child(_torso)
-	add_child(_neck)
-	add_child(_head)
-	var thigh := _cached("_thigh_mesh", _thigh_mesh)
-	var shin := _cached("_shin_mesh", _shin_mesh)
-	var foot := _cached("_foot_mesh", _foot_mesh)
-	var upper := _cached("_upper_arm_mesh", _upper_arm_mesh)
-	var fore := _cached("_forearm_mesh", _forearm_mesh)
-	for i in 2:
-		_thighs.append(_instance(thigh))
-		_shins.append(_instance(shin))
-		_feet.append(_instance(foot))
-		_upper_arms.append(_instance(upper))
-		_forearms.append(_instance(fore))
-	for arr: Array[MeshInstance3D] in [_thighs, _shins, _feet, _upper_arms, _forearms]:
-		for mi: MeshInstance3D in arr:
-			add_child(mi)
+	_body = RiderBody.new()
+	_body.setup(_jersey, _jersey_dark, _accent)
+	add_child(_body)
 	_update_pose()
 
 
@@ -342,33 +312,32 @@ func _update_pose() -> void:
 
 	var spine := body * Vector3(0.0, sin(spine_a), -cos(spine_a))
 	var back := body * Vector3.UP - spine * spine.dot(body * Vector3.UP)
-	_orient(_torso, hip_mid, hip_mid + spine, body * Vector3.UP)
 	var shoulder_mid := hip_mid + spine * SPINE
 	var head_up := body * Vector3.UP
 	var head_c := shoulder_mid + spine * neck.x + head_up * neck.y
 	var head_basis := body * Basis(Vector3.RIGHT, -head_pitch)
-	_head.transform = Transform3D(head_basis, head_c)
-	var neck_a := shoulder_mid + spine * 0.02 - back.normalized() * 0.01
-	var neck_b := head_c - head_basis.y * 0.04 + head_basis.z * 0.02
-	_orient(_neck, neck_a, neck_b, -spine, (neck_b - neck_a).length())
+	_body.body = body
+	_body.hip_mid = hip_mid
+	_body.spine = spine
+	_body.head = Transform3D(head_basis, head_c)
+	_body.bike = bike_xf.basis
+	_body.drops = drops
 
 	for i in 2:
 		var s := -1.0 if i == 0 else 1.0
 		# Jambe.
 		var hip := hip_mid + right * s * HIP_HALF
-		var knee := _ik(hip, ankles[i], THIGH, SHIN, body * Vector3(s * 0.12, 0.25, -1.0))
-		var ankle := knee + (ankles[i] - knee).normalized() * SHIN
-		_orient(_thighs[i], hip, knee, body * Vector3.FORWARD)
-		_orient(_shins[i], knee, ankle, body * Vector3.FORWARD)
-		_feet[i].transform = Transform3D(foot_bases[i], ankle)
+		_body.knees[i] = _ik(hip, ankles[i], THIGH, SHIN, body * Vector3(s * 0.12, 0.25, -1.0))
+		_body.ankles[i] = ankles[i]
+		_body.feet[i] = foot_bases[i]
 		# Bras.
 		var shoulder := shoulder_mid + right * s * SHOULDER_HALF - back.normalized() * 0.03
 		var hood := bike_xf * _p(BAR_F + 0.10, BAR_H + 0.045, s * BAR_X)
 		var low := bike_xf * _p(BAR_F + 0.025, BAR_H - 0.112, s * (BAR_X + 0.005))
 		var hand := hood.lerp(low, drops)
-		var elbow := _ik(shoulder, hand, UPPER_ARM, FOREARM, body * Vector3(s * 0.7, -0.5, 0.6))
-		_orient(_upper_arms[i], shoulder, elbow, body * Vector3(s, 0.0, 0.0))
-		_orient(_forearms[i], elbow, elbow + (hand - elbow).normalized() * FOREARM, body * Vector3(s, 0.0, 0.0))
+		_body.elbows[i] = _ik(shoulder, hand, UPPER_ARM, FOREARM, body * Vector3(s * 0.7, -0.5, 0.6))
+		_body.hands[i] = hand
+	_body.apply()
 
 
 ## Articulation intermédiaire (genou, coude) d'une chaîne à deux segments,
@@ -381,18 +350,6 @@ static func _ik(root: Vector3, target: Vector3, l1: float, l2: float, pole: Vect
 	var ang := acos(clampf(cos_a, -1.0, 1.0))
 	var p := (pole - dir * pole.dot(dir)).normalized()
 	return root + dir * (l1 * cos(ang)) + p * (l1 * sin(ang))
-
-
-## Oriente un segment (maillage le long de -Z depuis son origine) de a vers b,
-## étiré à `length` si le maillage est de longueur unité.
-static func _orient(node: Node3D, a: Vector3, b: Vector3, up: Vector3, length := 1.0) -> void:
-	var dir := (b - a).normalized()
-	if absf(dir.dot(up.normalized())) > 0.98:
-		up = Vector3.BACK if absf(dir.z) < 0.9 else Vector3.UP
-	var basis := Basis.looking_at(dir, up)
-	if length != 1.0:
-		basis = Basis(basis.x, basis.y, basis.z * length)
-	node.transform = Transform3D(basis, a)
 
 
 ## Point du vélo : avancée et hauteur par rapport au pédalier, écart latéral.
@@ -421,15 +378,6 @@ static func _tube_rows(length: float, r0: float, r1: float, oval := 1.0) -> Arra
 
 static func _tube(mb: Mb, a: Vector3, b: Vector3, r0: float, r1: float, col: Variant, seg := 12, oval := 1.0) -> void:
 	mb.revolve(_axis(a, b - a), _tube_rows(a.distance_to(b), r0, r1, oval), seg, col)
-
-
-## Ellipsoïde (demi-axes x, y, z), axe le long de -Z.
-static func _ellipsoid_rows(rx: float, ry: float, rz: float, n := 10) -> Array[Vector4]:
-	var rows: Array[Vector4] = []
-	for i in n + 1:
-		var th := PI * float(i) / n
-		rows.append(Vector4(-rz * cos(th), rx * sin(th), ry * sin(th), 0.0))
-	return rows
 
 
 func _instance(mesh: Mesh) -> MeshInstance3D:
@@ -668,146 +616,6 @@ func _pedal_mesh() -> ArrayMesh:
 		Vector4(0.088, 0.016, 0.007, 0.0), Vector4(0.09, 0.0, 0.0, 0.0)], 12, CARBON)
 	metal.box(Transform3D(Basis(), Vector3(0.0, 0.009, 0.005)), Vector3(0.05, 0.003, 0.05), SILVER)
 	return _commit([gloss, metal])
-
-
-# --- Cycliste ---------------------------------------------------------------
-
-## Tronc du bassin aux épaules (le long de -Z, dos vers +Y) : cuissard, maillot
-## à flancs blancs, bande rouge et poches dans le dos.
-func _torso_mesh() -> ArrayMesh:
-	var mb := Mb.new(_m_matte)
-	var rows: Array[Vector4] = [Vector4(-0.12, 0.0, 0.0, 0.035), Vector4(-0.11, 0.09, 0.06, 0.035), Vector4(-0.07, 0.15, 0.1, 0.03),
-		Vector4(0.0, 0.165, 0.11, 0.015), Vector4(0.08, 0.155, 0.1, 0.0), Vector4(0.18, 0.148, 0.095, 0.0),
-		Vector4(0.3, 0.165, 0.11, 0.005), Vector4(0.41, 0.185, 0.115, 0.01), Vector4(0.49, 0.19, 0.105, 0.0),
-		Vector4(0.545, 0.15, 0.085, -0.005), Vector4(0.575, 0.08, 0.06, -0.01), Vector4(0.59, 0.0, 0.0, -0.01)]
-	mb.revolve(Transform3D(), rows, 24, func(t: float, phi: float, _r: float) -> Color:
-		if t < 0.075:
-			return BIB
-		if t < 0.095:
-			return _jersey_dark
-		if t > 0.54:
-			return _jersey_dark
-		if t > 0.34 and t < 0.39:
-			return _accent
-		if absf(cos(phi)) > 0.9 and t < 0.46:
-			return WHITE
-		if sin(phi) > 0.55 and t < 0.22:
-			return _jersey_dark if t < 0.205 else WHITE
-		return _jersey)
-	return _commit([mb])
-
-
-func _neck_mesh() -> ArrayMesh:
-	var mb := Mb.new(_m_skin)
-	mb.revolve(Transform3D(), [Vector4(0.0, 0.0, 0.0, 0.0), Vector4(0.0, 0.075, 0.07, 0.0), Vector4(0.25, 0.064, 0.062, 0.0),
-		Vector4(1.0, 0.058, 0.056, 0.0), Vector4(1.0, 0.0, 0.0, 0.0)], 12, func(t: float, _phi: float, _r: float) -> Color:
-		return _jersey_dark if t < 0.25 else SKIN)
-	return _commit([mb])
-
-
-## Tête (avant vers -Z) : casque profilé à aérations, lunettes, sangles.
-func _head_mesh() -> ArrayMesh:
-	var skin := Mb.new(_m_skin)
-	var gloss := Mb.new(_m_gloss)
-	skin.revolve(Transform3D(), _ellipsoid_rows(0.08, 0.1, 0.1), 16, func(t: float, phi: float, _r: float) -> Color:
-		# Cheveux courts à l'arrière du crâne, sous le casque.
-		return HAIR if t < -0.02 and sin(phi) > -0.45 else SKIN)
-	for s: float in [-1.0, 1.0]:
-		skin.revolve(Transform3D(Basis(), Vector3(s * 0.078, -0.005, 0.005)), _ellipsoid_rows(0.012, 0.028, 0.018, 6), 8, SKIN)
-	skin.revolve(_axis(Vector3(0.0, -0.005, -0.09), Vector3(0.0, -0.4, -1.0), Vector3.UP),
-		[Vector4(0.0, 0.012, 0.012, 0.0), Vector4(0.025, 0.006, 0.01, 0.0), Vector4(0.03, 0.0, 0.0, 0.0)], 8, SKIN)
-	# Casque : coque allongée vers l'arrière, aérations noires, liserés bleus.
-	var shell: Array[Vector4] = [Vector4(-0.155, 0.0, 0.0, 0.02), Vector4(-0.148, 0.035, 0.03, 0.02), Vector4(-0.125, 0.07, 0.07, 0.02),
-		Vector4(-0.08, 0.1, 0.108, 0.025), Vector4(-0.02, 0.11, 0.128, 0.025), Vector4(0.04, 0.108, 0.126, 0.025),
-		Vector4(0.085, 0.094, 0.105, 0.02), Vector4(0.108, 0.07, 0.075, 0.015), Vector4(0.12, 0.035, 0.04, 0.012), Vector4(0.124, 0.0, 0.0, 0.01)]
-	gloss.revolve(Transform3D(), shell, 30, func(t: float, phi: float, _r: float) -> Color:
-		var deg := rad_to_deg(phi)
-		if deg < 8.0 or deg > 172.0:
-			return _jersey
-		if t > -0.1 and t < 0.08 and deg > 28.0 and deg < 152.0 and fposmod(deg - 28.0, 24.0) < 8.0:
-			return CARBON
-		if absf(deg - 90.0) < 5.0:
-			return _accent
-		return WHITE, -0.25, PI + 0.25)
-	# Lunettes enveloppantes.
-	var lens_xf := _axis(Vector3(0.0, 0.012, 0.0), Vector3.UP, Vector3.FORWARD)
-	gloss.revolve(lens_xf, [Vector4(-0.022, 0.09, 0.112, 0.0), Vector4(0.016, 0.094, 0.116, 0.0), Vector4(0.024, 0.093, 0.115, 0.0)], 18,
-		func(t: float, _phi: float, _r: float) -> Color:
-			return CARBON if t > 0.016 else LENS, deg_to_rad(15.0), deg_to_rad(165.0))
-	for s: float in [-1.0, 1.0]:
-		gloss.sweep(PackedVector3Array([Vector3(s * 0.088, 0.03, -0.035), Vector3(s * 0.084, 0.028, 0.05)]), PackedFloat32Array([0.004]), 6, CARBON)
-		skin.sweep(PackedVector3Array([Vector3(s * 0.082, 0.0, 0.025), Vector3(s * 0.07, -0.07, -0.02), Vector3(0.0, -0.105, -0.055)]),
-			PackedFloat32Array([0.0035]), 5, CARBON)
-	return _commit([skin, gloss])
-
-
-## Cuisse : cuissard noir jusqu'à la bande élastique, puis peau.
-func _thigh_mesh() -> ArrayMesh:
-	var mb := Mb.new(_m_matte)
-	var rows: Array[Vector4] = [Vector4(-0.06, 0.0, 0.0, 0.0), Vector4(-0.05, 0.055, 0.06, 0.0), Vector4(-0.02, 0.08, 0.085, 0.0),
-		Vector4(0.06, 0.082, 0.088, 0.004), Vector4(0.17, 0.074, 0.08, 0.006), Vector4(0.29, 0.064, 0.066, 0.004),
-		Vector4(0.4, 0.052, 0.056, 0.002), Vector4(0.45, 0.05, 0.054, 0.0), Vector4(0.48, 0.035, 0.038, 0.0), Vector4(0.495, 0.0, 0.0, 0.0)]
-	mb.revolve(Transform3D(), rows, 16, func(t: float, _phi: float, _r: float) -> Color:
-		if t < 0.27:
-			return BIB
-		return BIB_BAND if t < 0.3 else SKIN)
-	return _commit([mb])
-
-
-## Jambe : mollet vers l'arrière (+Y local vers l'avant), chaussette blanche.
-func _shin_mesh() -> ArrayMesh:
-	var mb := Mb.new(_m_skin)
-	var rows: Array[Vector4] = [Vector4(-0.045, 0.0, 0.0, 0.0), Vector4(-0.035, 0.038, 0.04, 0.0), Vector4(0.0, 0.05, 0.05, 0.0),
-		Vector4(0.08, 0.053, 0.058, -0.012), Vector4(0.15, 0.05, 0.054, -0.012), Vector4(0.27, 0.038, 0.04, -0.005),
-		Vector4(0.38, 0.032, 0.034, 0.0), Vector4(0.45, 0.031, 0.033, 0.0), Vector4(0.47, 0.0, 0.0, 0.0)]
-	mb.revolve(Transform3D(), rows, 14, func(t: float, _phi: float, _r: float) -> Color:
-		if t < 0.29:
-			return SKIN
-		return _jersey if t < 0.31 else SOCK)
-	return _commit([mb])
-
-
-## Chaussure (origine à la cheville, pointe vers -Z) : tige blanche, semelle
-## carbone, cale sous l'avant du pied.
-func _foot_mesh() -> ArrayMesh:
-	var gloss := Mb.new(_m_gloss)
-	var xf := _axis(Vector3(0.0, -0.045, 0.07), Vector3.FORWARD, Vector3.UP)
-	var rows: Array[Vector4] = [Vector4(0.0, 0.0, 0.0, 0.0), Vector4(0.005, 0.03, 0.035, 0.0), Vector4(0.04, 0.04, 0.05, 0.0),
-		Vector4(0.1, 0.044, 0.05, 0.0), Vector4(0.16, 0.048, 0.04, -0.008), Vector4(0.22, 0.044, 0.028, -0.016),
-		Vector4(0.255, 0.03, 0.018, -0.022), Vector4(0.27, 0.0, 0.0, -0.025)]
-	gloss.revolve(xf, rows, 16, func(t: float, phi: float, _r: float) -> Color:
-		if sin(phi) < -0.55 or t < 0.035:
-			return CARBON
-		if absf(cos(phi)) < 0.5 and sin(phi) > 0.0 and t > 0.1 and t < 0.13:
-			return CARBON
-		return WHITE)
-	gloss.box(Transform3D(Basis(), Vector3(0.0, -0.093, -0.065)), Vector3(0.082, 0.008, 0.25), CARBON)
-	gloss.box(Transform3D(Basis(), Vector3(0.0, -0.1, -0.12)), Vector3(0.06, 0.008, 0.06), _accent)
-	return _commit([gloss])
-
-
-## Bras : manche du maillot avec liseré, puis peau.
-func _upper_arm_mesh() -> ArrayMesh:
-	var mb := Mb.new(_m_matte)
-	var rows: Array[Vector4] = [Vector4(-0.06, 0.0, 0.0, 0.0), Vector4(-0.05, 0.05, 0.05, 0.0), Vector4(-0.01, 0.066, 0.066, 0.0),
-		Vector4(0.1, 0.058, 0.06, 0.0), Vector4(0.2, 0.05, 0.052, 0.0), Vector4(0.28, 0.044, 0.044, 0.0),
-		Vector4(0.31, 0.034, 0.034, 0.0), Vector4(0.33, 0.0, 0.0, 0.0)]
-	mb.revolve(Transform3D(), rows, 12, func(t: float, _phi: float, _r: float) -> Color:
-		if t < 0.17:
-			return _jersey
-		return _accent if t < 0.195 else SKIN)
-	return _commit([mb])
-
-
-## Avant-bras et main gantée (mitaine noire).
-func _forearm_mesh() -> ArrayMesh:
-	var mb := Mb.new(_m_skin)
-	var rows: Array[Vector4] = [Vector4(-0.03, 0.0, 0.0, 0.0), Vector4(-0.02, 0.04, 0.04, 0.0), Vector4(0.02, 0.046, 0.046, 0.0),
-		Vector4(0.09, 0.047, 0.042, 0.0), Vector4(0.21, 0.032, 0.028, 0.0), Vector4(0.25, 0.032, 0.024, 0.0),
-		Vector4(0.29, 0.045, 0.027, 0.0), Vector4(0.33, 0.043, 0.026, 0.0), Vector4(0.37, 0.03, 0.022, 0.0), Vector4(0.385, 0.0, 0.0, 0.0)]
-	mb.revolve(Transform3D(), rows, 12, func(t: float, _phi: float, _r: float) -> Color:
-		return BIB if t > 0.235 else SKIN)
-	return _commit([mb])
 
 
 static func _commit(parts: Array[Mb]) -> ArrayMesh:
