@@ -30,6 +30,7 @@ use session::Session;
 mod devices;
 mod history;
 mod profile;
+mod sdf;
 mod session;
 mod strava;
 

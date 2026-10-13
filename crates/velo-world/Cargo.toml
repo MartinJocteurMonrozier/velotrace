@@ -12,6 +12,7 @@ ureq = { version = "2.12", features = ["native-certs"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde_json = "1"
 earcutr = "0.4"
+meshopt = "0.6"
 dirs = "6"
 
 [dev-dependencies]

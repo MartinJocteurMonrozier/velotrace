@@ -16,6 +16,7 @@ pub mod osm;
 pub mod race;
 pub mod raster;
 pub mod road;
+pub mod sdf;
 pub mod roadnet;
 pub mod stream;
 pub mod tiles;
