@@ -45,6 +45,8 @@ const CHASE_LAG_S := 0.6
 const CHASE_MAX_LAG := 0.65
 ## Les coureurs virtuels sont dessinés jusqu'à cette distance du joueur.
 const OPPONENT_SHOW_M := 400.0
+## Distance à la caméra en dessous de laquelle un coureur virtuel est caché.
+const OPPONENT_HIDE_CAM_M := 2.2
 ## Temps laissé pour savourer l'arrivée avant le bilan.
 const FINISH_HOLD_S := 4.0
 
@@ -383,7 +385,9 @@ func _place_opponents(player: Vector3, delta: float, snap: bool) -> void:
 		var o: Dictionary = list[i]
 		var c := _opponents[i]
 		var p: Vector3 = o.position - Vector3(0.0, _base_elev, 0.0)
-		c.visible = p.distance_to(player) < OPPONENT_SHOW_M
+		# Un coureur qui frôle la caméra masquerait l'écran : on le cache.
+		var near_cam := (p + Vector3(0.0, 1.0, 0.0)).distance_to(_camera.global_position) < OPPONENT_HIDE_CAM_M
+		c.visible = p.distance_to(player) < OPPONENT_SHOW_M and not near_cam
 		if not c.visible:
 			continue
 		var dir: Vector3 = o.direction
