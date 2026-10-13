@@ -13,8 +13,8 @@ const Fmt := preload("res://scripts/ui/fmt.gd")
 const Chart := preload("res://scripts/ui/chart.gd")
 
 const STRAVA := Color("fc4c02")
-const ELEVATION := Color("7d93ad")
-const CURVE_90 := Color("5aa9ff")
+const ELEVATION := Color("9a9a9a")
+const CURVE_90 := Color("4f9cf0")
 
 var menu: Node
 

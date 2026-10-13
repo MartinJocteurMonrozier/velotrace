@@ -10,10 +10,10 @@ const PAGE := 12
 ## Durées clés de la courbe de puissance.
 const KEY_DURATIONS := [[5, "5 s"], [60, "1 min"], [300, "5 min"], [1200, "20 min"], [3600, "1 h"]]
 const CURVES := [[0, "Depuis toujours"], [365, "365 jours"], [90, "90 jours"], [42, "42 jours"]]
-const CURVE_COLORS := [Color(0.98, 0.62, 0.20), Color("2ec4b6"), Color("5aa9ff"), Color("c08cf0")]
-const CTL_COLOR := Color("5aa9ff")
-const ATL_COLOR := Color("f0605a")
-const TSB_COLOR := Color(0.98, 0.62, 0.20)
+const CURVE_COLORS := [Color("e3a200"), Color("cfcfcf"), Color("4f9cf0"), Color("b48ce6")]
+const CTL_COLOR := Color("4f9cf0")
+const ATL_COLOR := Color("e5534b")
+const TSB_COLOR := Color("e3a200")
 
 var menu: Node
 
@@ -357,7 +357,7 @@ func _refresh_volume() -> void:
 		tot.elev += w.elevation_m
 		tot.tss += w.tss
 	_hours_chart.set_series([{"name": "Heures", "color": UI.ACCENT, "kind": "bar", "points": hours}])
-	_tss_chart.set_series([{"name": "TSS", "color": UI.TEAL, "kind": "bar", "points": tss}])
+	_tss_chart.set_series([{"name": "TSS", "color": UI.SECOND, "kind": "bar", "points": tss}])
 	UI.set_tile(_vol_tiles.rides, str(tot.rides))
 	UI.set_tile(_vol_tiles.time, Fmt.duration(tot.time))
 	UI.set_tile(_vol_tiles.dist, Fmt.num(tot.dist / 1000.0))

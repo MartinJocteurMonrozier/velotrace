@@ -80,8 +80,8 @@ func _draw() -> void:
 		x += d
 		var y0 := _plot.end.y - f / ymax * _plot.size.y
 		var y1 := _plot.end.y - t / ymax * _plot.size.y
-		var c0 := Color("5c6878") if free else UI.zone_color(f)
-		var c1 := Color("5c6878") if free else UI.zone_color(t)
+		var c0 := Color("6b6b6b") if free else UI.zone_color(f)
+		var c1 := Color("6b6b6b") if free else UI.zone_color(t)
 		var dim := 1.0
 		if (_hover >= 0 and i != _hover) or (highlight >= 0 and i != highlight and _hover < 0):
 			dim = 0.55
@@ -132,7 +132,7 @@ func _draw_tip(font: Font, s: Dictionary, i: int) -> void:
 	var bx := clampf(r.get_center().x - w * 0.5, 0.0, size.x - w)
 	var box := Rect2(bx, 2.0, w, 26.0)
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color("1d2c40")
+	sb.bg_color = UI.CARD_HI
 	sb.set_corner_radius_all(6)
 	sb.border_color = UI.BORDER_HI
 	sb.set_border_width_all(1)

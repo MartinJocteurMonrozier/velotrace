@@ -1,29 +1,30 @@
 extends RefCounted
-## Thème sombre de l'application (fond bleu nuit, cartes arrondies, accent orange)
+## Thème sombre de l'application (gris anthracite neutres, cartes arrondies, accent jaune d'or)
 ## et petits constructeurs pour les éléments qui reviennent partout.
 ##
 ## Utilisation : `const UI := preload("res://scripts/ui/theme.gd")`, puis
 ## `root.theme = UI.build()` et `UI.card()`, `UI.metric_tile(...)`, etc.
 
-const BG := Color("0d141f")
-const BG_DEEP := Color("09101a")
-const CARD := Color("141f2e")
-const CARD_HI := Color("1a283a")
-const FIELD := Color("0f1824")
-const BORDER := Color("243549")
-const BORDER_HI := Color("35506e")
-const ACCENT := Color(0.98, 0.62, 0.20)
-const ACCENT_HI := Color("ffb45c")
-const ACCENT_LO := Color("de8418")
-const ON_ACCENT := Color("1a1206")
-const TEAL := Color("2ec4b6")
-const TEXT := Color("eef3f8")
-const TEXT_DIM := Color("a8b5c5")
-const TEXT_MUTED := Color("6c7d92")
-const OK := Color("44d17e")
-const WARN := Color("f2c14b")
-const ERROR := Color("f0605a")
-const INFO := Color("5aa9ff")
+const BG := Color("1e1e1e")
+const BG_DEEP := Color("161616")
+const CARD := Color("2a2a2a")
+const CARD_HI := Color("343434")
+const FIELD := Color("1a1a1a")
+const BORDER := Color("3d3d3d")
+const BORDER_HI := Color("575757")
+const ACCENT := Color("e3a200")
+const ACCENT_HI := Color("f5b81c")
+const ACCENT_LO := Color("c48b00")
+const ON_ACCENT := Color("161616")
+## Couleur secondaire neutre (profils, barres) : un gris clair.
+const SECOND := Color("cfcfcf")
+const TEXT := Color("ffffff")
+const TEXT_DIM := Color("b4b4b4")
+const TEXT_MUTED := Color("858585")
+const OK := Color("4cc46a")
+const WARN := Color("f0b429")
+const ERROR := Color("e5534b")
+const INFO := Color("4f9cf0")
 
 const RADIUS := 12
 const FONT_SIZE := 16
@@ -332,9 +333,9 @@ static func build() -> Theme:
 	t.set_color("font_color", "ProgressBar", TEXT)
 	t.set_color("font_outline_color", "ProgressBar", Color(0, 0, 0, 0.6))
 	t.set_type_variation("TealProgress", "ProgressBar")
-	t.set_stylebox("fill", "TealProgress", _box(TEAL, 6, 0, 0))
+	t.set_stylebox("fill", "TealProgress", _box(SECOND, 6, 0, 0))
 
-	var track := _box(Color("23324a"), 3, 0, 3)
+	var track := _box(Color("4a4a4a"), 3, 0, 3)
 	var track_fill := _box(ACCENT, 3, 0, 3)
 	t.set_stylebox("slider", "HSlider", track)
 	t.set_stylebox("grabber_area", "HSlider", track_fill)
@@ -589,7 +590,7 @@ static func link_color(state: String) -> Color:
 ## Couleur de zone d'entraînement selon la fraction de FTP.
 static func zone_color(ftp_fraction: float) -> Color:
 	if ftp_fraction < 0.55:
-		return Color("8693a3")
+		return Color("8c8c8c")
 	if ftp_fraction < 0.75:
 		return Color("3d8bfd")
 	if ftp_fraction < 0.90:

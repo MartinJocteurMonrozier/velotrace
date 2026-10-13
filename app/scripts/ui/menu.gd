@@ -66,24 +66,6 @@ func _build_background() -> void:
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(bg)
-	# Deux halos discrets, orange en haut à droite et bleu-vert en bas à gauche.
-	for spec in [[Vector2(0.92, 0.0), UI.ACCENT, 0.07], [Vector2(0.0, 1.0), UI.TEAL, 0.05]]:
-		var g := Gradient.new()
-		g.set_color(0, Color(spec[1], spec[2]))
-		g.set_color(1, Color(spec[1], 0.0))
-		var tex := GradientTexture2D.new()
-		tex.gradient = g
-		tex.fill = GradientTexture2D.FILL_RADIAL
-		tex.fill_from = spec[0]
-		tex.fill_to = spec[0] + Vector2(0.55, 0.0)
-		tex.width = 256
-		tex.height = 256
-		var r := TextureRect.new()
-		r.texture = tex
-		r.set_anchors_preset(Control.PRESET_FULL_RECT)
-		r.stretch_mode = TextureRect.STRETCH_SCALE
-		r.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		_root.add_child(r)
 
 
 func _build_top_bar() -> Control:
@@ -253,7 +235,7 @@ func _refresh_devices() -> void:
 		return
 	if App.ride.profile_get("app.test_mode") == true:
 		for role in ROLES:
-			UI.set_dot(_device_dots[role], UI.TEAL)
+			UI.set_dot(_device_dots[role], UI.OK)
 		_device_label.text = "Mode test"
 		return
 	var states := device_states()

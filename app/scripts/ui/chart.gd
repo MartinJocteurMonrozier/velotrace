@@ -401,7 +401,7 @@ func _draw_area(s: Dictionary) -> void:
 	var sp := _screen_points(s.points, second)
 	if sp.size() < 2:
 		return
-	var col: Color = s.get("color", UI.TEAL)
+	var col: Color = s.get("color", UI.SECOND)
 	var top_a: float = s.get("fill_alpha", 0.35)
 	var base := _plot.end.y
 	var c_top := Color(col, top_a)
@@ -522,7 +522,7 @@ func _draw_hover(font: Font, bold: Font, hx: float) -> void:
 		box.position.x = ax - 14.0 - box.size.x
 	box.position.x = maxf(box.position.x, 2.0)
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color("1d2c40")
+	sb.bg_color = UI.CARD_HI
 	sb.set_corner_radius_all(8)
 	sb.border_color = UI.BORDER_HI
 	sb.set_border_width_all(1)
