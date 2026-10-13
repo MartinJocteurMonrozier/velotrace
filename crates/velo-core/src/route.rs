@@ -185,6 +185,31 @@ impl Route {
         self.grades[i] * (1.0 - t) + self.grades[j] * t
     }
 
+    /// Pente la plus forte (fraction) sur `window_m` mètres entre `start_m`
+    /// et `end_m`, mesurée tous les 10 m sur l'altitude lissée sur 100 m
+    /// (comme pour les ascensions) : un saut du GPS ne fait pas un mur.
+    pub fn max_grade(&self, start_m: f64, end_m: f64, window_m: f64) -> f64 {
+        let smooth = |d: f64| {
+            (-5..=5)
+                .map(|k| self.point_at(d + k as f64 * 10.0).elevation_m)
+                .sum::<f64>()
+                / 11.0
+        };
+        let window = window_m.min(end_m - start_m).max(1.0);
+        let mut best = f64::MIN;
+        let mut d = start_m;
+        loop {
+            let a = smooth(d);
+            let b = smooth(d + window);
+            best = best.max((b - a) / window);
+            if d + window >= end_m {
+                break;
+            }
+            d = (d + 10.0).min(end_m - window);
+        }
+        best
+    }
+
     /// Ascensions du parcours : au moins 80 m de dénivelé à 3 % de moyenne,
     /// courts replats compris, du pied (là où la pente prend vraiment) au
     /// sommet.
@@ -264,6 +289,18 @@ impl Climb {
     /// Pente moyenne (fraction).
     pub fn grade(&self) -> f64 {
         self.gain_m / self.length_m().max(1.0)
+    }
+
+    /// Catégorie à la manière des grands tours, d'après le produit
+    /// longueur × pente (m × %).
+    pub fn category(&self) -> &'static str {
+        match self.length_m() * self.grade() * 100.0 {
+            s if s >= 80_000.0 => "hors catégorie",
+            s if s >= 64_000.0 => "1re catégorie",
+            s if s >= 32_000.0 => "2e catégorie",
+            s if s >= 16_000.0 => "3e catégorie",
+            _ => "4e catégorie",
+        }
     }
 }
 
@@ -365,6 +402,24 @@ mod tests {
         assert!((c[1].start_m - 8000.0).abs() < 120.0, "{c:?}");
         assert!((c[1].end_m - 11000.0).abs() < 120.0, "{c:?}");
         assert!((c[1].top_elevation_m - 945.0).abs() < 8.0, "{c:?}");
+        assert_eq!(c[0].category(), "2e catégorie");
+        assert_eq!(c[1].category(), "4e catégorie");
+        let max = r.max_grade(c[0].start_m, c[0].end_m, 100.0);
+        assert!((max - 0.07).abs() < 0.003, "{max}");
+    }
+
+    #[test]
+    fn climb_categories() {
+        let climb = |length_m: f64, grade: f64| Climb {
+            start_m: 0.0,
+            end_m: length_m,
+            gain_m: length_m * grade,
+            top_elevation_m: 0.0,
+        };
+        // Alpe d'Huez : 13,8 km à 8,1 %.
+        assert_eq!(climb(13_800.0, 0.081).category(), "hors catégorie");
+        assert_eq!(climb(4_000.0, 0.05).category(), "3e catégorie");
+        assert_eq!(climb(1_000.0, 0.04).category(), "4e catégorie");
     }
 
     #[test]

@@ -76,18 +76,6 @@ fn fr(x: f64, decimals: usize) -> String {
     out
 }
 
-/// Catégorie d'une ascension à la manière des grands tours, d'après le
-/// produit longueur × pente (m × %).
-fn category(length_m: f64, grade: f64) -> &'static str {
-    match length_m * grade * 100.0 {
-        s if s >= 80_000.0 => "hors catégorie",
-        s if s >= 64_000.0 => "1re catégorie",
-        s if s >= 32_000.0 => "2e catégorie",
-        s if s >= 16_000.0 => "3e catégorie",
-        _ => "4e catégorie",
-    }
-}
-
 /// Arches du parcours, dans l'ordre.
 pub fn arches(route: &Route, path: &RoadPath) -> Vec<Arch> {
     let len = route.length_m();
@@ -105,7 +93,7 @@ pub fn arches(route: &Route, path: &RoadPath) -> Vec<Arch> {
             fr(c.length_m() / 1000.0, 1),
             fr(c.grade() * 100.0, 1)
         );
-        let cat = category(c.length_m(), c.grade());
+        let cat = c.category();
         let summit = format!("{} m d'altitude", fr(c.top_elevation_m, 0));
         if c.start_m - start_d < MERGE_M {
             plan[0].3 = format!("Ascension : {about} · {cat}");
@@ -512,14 +500,6 @@ mod tests {
         assert_eq!(fr(1784.4, 0), "1 784");
         assert_eq!(fr(12.46, 1), "12,5");
         assert_eq!(fr(-3.0, 0), "-3");
-    }
-
-    #[test]
-    fn climb_categories() {
-        // Alpe d'Huez : 13,8 km à 8,1 %.
-        assert_eq!(category(13_800.0, 0.081), "hors catégorie");
-        assert_eq!(category(4_000.0, 0.05), "3e catégorie");
-        assert_eq!(category(1_000.0, 0.04), "4e catégorie");
     }
 
     #[test]

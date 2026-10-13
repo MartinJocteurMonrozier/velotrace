@@ -356,6 +356,34 @@ impl VeloRide {
         self.route.as_ref().map_or(0.0, |r| r.elevation_gain_m())
     }
 
+    /// Ascensions du parcours, dans l'ordre : `start_m`, `end_m`, `length_m`,
+    /// `gain_m`, `avg_grade_pct`, `max_grade_pct` (sur 100 m), `category`
+    /// (« 1re catégorie »…) et `top_elevation_m`. Après la construction du
+    /// décor réel, elles suivent l'altitude du relief, comme `route_points`.
+    #[func]
+    fn route_climbs(&self) -> VarArray {
+        let mut out = VarArray::new();
+        let Some(r) = &self.route else {
+            return out;
+        };
+        for c in r.climbs() {
+            let mut d = VarDictionary::new();
+            d.set("start_m", c.start_m);
+            d.set("end_m", c.end_m);
+            d.set("length_m", c.length_m());
+            d.set("gain_m", c.gain_m);
+            d.set("avg_grade_pct", c.grade() * 100.0);
+            d.set(
+                "max_grade_pct",
+                r.max_grade(c.start_m, c.end_m, 100.0) * 100.0,
+            );
+            d.set("category", c.category());
+            d.set("top_elevation_m", c.top_elevation_m);
+            out.push(&d.to_variant());
+        }
+        out
+    }
+
     /// Points du parcours en coordonnées Godot : x vers l'est, y altitude, z vers le sud.
     #[func]
     fn route_points(&self) -> PackedVector3Array {

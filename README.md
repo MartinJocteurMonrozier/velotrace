@@ -56,7 +56,11 @@ Sans home trainer connecté, les trois premiers modes roulent aussi avec le cycl
 
 ![Course contre des coureurs virtuels](docs/captures/app-course.jpg)
 
-Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent l'effort du cycliste virtuel, A active ou coupe les Click automatiques, C change de caméra, Espace ou Échap met en **pause**. En pause, on ajuste la difficulté des pentes, le poids, les Click automatiques, la caméra, et selon le mode l'ERG, l'intensité et l'étape de la séance, le niveau des coureurs virtuels ou l'effort du cycliste virtuel ; puis on reprend, on termine (la sortie est enregistrée) ou on abandonne sans enregistrer.
+![Mode col dans la montée de l'Alpe d'Huez](docs/captures/mode-col.jpg)
+
+**Mode col** : 100 m avant le pied de chaque ascension, le profil du bas laisse la place à celui du col seul, comme sur MyWhoosh : tronçons de 250 ou 500 m colorés selon leur pente (écrite dessus), kilomètres, drapeau à pois au sommet avec son altitude, ta position et celle des coureurs virtuels, et en tête la catégorie (4e à hors catégorie), la distance au sommet, le dénivelé restant et la pente moyenne de ce qui reste. Un bandeau annonce le début de l'ascension (longueur, pente, catégorie), un autre le sommet avec le temps de montée ; 100 m après le sommet, le profil du parcours revient. P bascule à tout moment entre le profil du parcours et celui du col en cours ou du prochain.
+
+Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent l'effort du cycliste virtuel, A active ou coupe les Click automatiques, C change de caméra, P affiche le profil du col ou du parcours, Espace ou Échap met en **pause**. En pause, on ajuste la difficulté des pentes, le poids, les Click automatiques, la caméra, et selon le mode l'ERG, l'intensité et l'étape de la séance, le niveau des coureurs virtuels ou l'effort du cycliste virtuel ; puis on reprend, on termine (la sortie est enregistrée) ou on abandonne sans enregistrer.
 
 ![Pause pendant une séance](docs/captures/app-pause.jpg)
 

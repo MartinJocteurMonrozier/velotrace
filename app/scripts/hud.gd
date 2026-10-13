@@ -3,6 +3,18 @@ extends CanvasLayer
 
 const ProfileView := preload("res://scripts/profile_view.gd")
 const MiniMap := preload("res://scripts/minimap.gd")
+const ClimbView := preload("res://scripts/climb_view.gd")
+const UI := preload("res://scripts/ui/theme.gd")
+const Fmt := preload("res://scripts/ui/fmt.gd")
+
+## Le profil du col s'affiche un peu avant le pied et jusqu'un peu après le sommet (m).
+const CLIMB_MARGIN_M := 100.0
+## Hauteur du panneau du bas : profil du parcours, profil du col.
+const PROFILE_H := 136.0
+const CLIMB_H := 220.0
+## Durée d'affichage du bandeau de début d'ascension et de sommet (s).
+const CLIMB_BANNER_S := 3.0
+const BANNER_TOP := 118.0
 
 var _values := {}
 var _profile: Control
@@ -29,6 +41,26 @@ var _board_panel: PanelContainer
 var _board: VBoxContainer
 var _rider_kg := 70.0
 var _avg := 0.0
+var _bottom: PanelContainer
+var _above_bottom: Array[Label] = []
+var _climb_view: Control
+var _climbs: Array = []
+## Profil du col affiché, ascension montrée et ascension choisie automatiquement.
+var _climb_shown := false
+var _climb_index := -1
+var _auto_climb := -1
+## Choix fait à la touche P : -1 automatique, 0 parcours entier, 1 col.
+var _manual := -1
+var _prev_d := -1.0
+## Par ascension : temps de sortie au pied, puis temps mis pour monter.
+var _climb_start_s := {}
+var _climb_time_s := {}
+var _bottom_tween: Tween
+var _climb_banner: PanelContainer
+var _climb_banner_box: CenterContainer
+var _climb_banner_title: Label
+var _climb_banner_sub: Label
+var _climb_banner_tween: Tween
 
 ## Séance : une barre par étape (hauteur = part de FTP), avancement en blanc.
 class WorkoutBar extends Control:
@@ -143,17 +175,27 @@ func _ready() -> void:
 	_gear_bar.custom_minimum_size = Vector2(230, 34)
 	gv.add_child(_gear_bar)
 
-	# Profil d'altitude en bas.
-	var bottom := _panel(root)
-	bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bottom.offset_left = 16
-	bottom.offset_right = -16
-	bottom.offset_top = -150
-	bottom.offset_bottom = -14
+	# Profil d'altitude en bas : le parcours entier, ou le col en cours.
+	_bottom = _panel(root)
+	_bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_bottom.offset_left = 16
+	_bottom.offset_right = -16
+	_bottom.offset_top = -14 - PROFILE_H
+	_bottom.offset_bottom = -14
+	var stack := Control.new()
+	stack.clip_contents = true
+	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_bottom.add_child(stack)
 	_profile = ProfileView.new()
-	bottom.add_child(_profile)
+	_profile.set_anchors_preset(Control.PRESET_FULL_RECT)
+	stack.add_child(_profile)
+	_climb_view = ClimbView.new()
+	_climb_view.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_climb_view.visible = false
+	_climb_view.modulate.a = 0.0
+	stack.add_child(_climb_view)
 
-	var help := _label("↑ ↓ : vitesses   ← → : effort (mode test)   A : Click auto   C : caméra   Espace ou Échap : pause", 14, Color(1, 1, 1, 0.7))
+	var help := _label("↑ ↓ : vitesses   ← → : effort (mode test)   A : Click auto   C : caméra   P : profil du col   Espace ou Échap : pause", 14, Color(1, 1, 1, 0.7))
 	help.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	help.offset_left = 20
 	help.offset_top = -178
@@ -177,6 +219,7 @@ func _ready() -> void:
 	_fps.offset_bottom = -156
 	_fps.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	root.add_child(_fps)
+	_above_bottom = [help, _tag, _fps]
 
 	# Sources du décor, obligatoires pour les données IGN et OSM.
 	_credits = _label("", 11, Color(1, 1, 1, 0.55))
@@ -198,12 +241,62 @@ func _ready() -> void:
 	_banner.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
 	root.add_child(_banner)
 
+	# Bandeau de début d'ascension et de sommet, sous les mesures.
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	center.offset_top = BANNER_TOP
+	center.offset_bottom = BANNER_TOP + 110.0
+	_climb_banner_box = center
+	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(center)
+	_climb_banner = PanelContainer.new()
+	_climb_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var bsb := StyleBoxFlat.new()
+	bsb.bg_color = Color(0.04, 0.06, 0.10, 0.78)
+	bsb.set_corner_radius_all(12)
+	bsb.border_width_bottom = 4
+	bsb.content_margin_left = 30
+	bsb.content_margin_right = 30
+	bsb.content_margin_top = 10
+	bsb.content_margin_bottom = 12
+	_climb_banner.add_theme_stylebox_override("panel", bsb)
+	_climb_banner.modulate.a = 0.0
+	_climb_banner.visible = false
+	center.add_child(_climb_banner)
+	var bv := VBoxContainer.new()
+	bv.add_theme_constant_override("separation", 0)
+	_climb_banner.add_child(bv)
+	_climb_banner_title = _label("", 34)
+	_climb_banner_title.add_theme_font_override("font", UI.font(700))
+	_climb_banner_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bv.add_child(_climb_banner_title)
+	_climb_banner_sub = _label("", 19, Color(1, 1, 1, 0.85))
+	_climb_banner_sub.add_theme_font_override("font", UI.font(500))
+	_climb_banner_sub.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bv.add_child(_climb_banner_sub)
+
 
 func setup(route_name: String, distances: PackedFloat32Array, points: PackedVector3Array, base_elev: float) -> void:
 	_route.text = route_name
 	_profile.elevation_offset = base_elev
 	_profile.setup(distances, points)
+	_climb_view.setup(distances, points, base_elev)
 	_minimap.setup(points)
+
+
+## Ascensions du parcours (`route_climbs()`), avec les mêmes altitudes que le profil.
+func setup_climbs(climbs: Array) -> void:
+	_climbs = climbs
+
+
+## Touche P : bascule entre le profil du parcours et celui du col en cours
+## (ou du prochain) ; le choix automatique reprend au col suivant.
+func toggle_profile() -> void:
+	if _climbs.is_empty():
+		_show_climb_banner("Pas d'ascension", "sur ce parcours", Color(1, 1, 1, 0.4))
+		return
+	_manual = 0 if _climb_shown else 1
+	_refresh_climb_view()
 
 
 ## Panneaux propres au mode : séance (consigne, étape, barres) ou classement.
@@ -254,6 +347,10 @@ func update_opponents(list: Array) -> void:
 	if _board == null:
 		return
 	var rows: Array = [{"name": "Toi", "gap_m": 0.0, "w_per_kg": _avg / _rider_kg, "me": true}]
+	var dists := PackedFloat32Array()
+	for o: Dictionary in list:
+		dists.append(o.distance_m)
+	_climb_view.opponents = dists
 	for o: Dictionary in list:
 		rows.append({"name": o.name, "gap_m": o.gap_m, "w_per_kg": o.w_per_kg, "me": false, "finished": o.get("finished", false)})
 	rows.sort_custom(func(a, b): return a.gap_m > b.gap_m)
@@ -342,8 +439,116 @@ func update(t: Dictionary, delta: float) -> void:
 	_gear_bar.queue_redraw()
 	_profile.position_m = t.distance_m
 	_profile.queue_redraw()
+	_update_climb(t)
 	_minimap.position_xz = Vector2(t.position.x, t.position.z)
 	_minimap.queue_redraw()
+
+
+## Mode col : profil du col à l'approche du pied et jusqu'après le sommet,
+## bandeaux au pied et au sommet.
+func _update_climb(t: Dictionary) -> void:
+	if _climbs.is_empty():
+		return
+	var d: float = t.distance_m
+	var auto := _climb_at(d)
+	if auto != _auto_climb:
+		_auto_climb = auto
+		_manual = -1
+	if _prev_d < 0.0:
+		# Départ au pied d'un col : son bandeau s'affiche aussi.
+		_prev_d = d
+		for c: Dictionary in _climbs:
+			if d >= c.start_m and d < c.start_m + 30.0:
+				_prev_d = c.start_m - 0.01
+	for i in _climbs.size():
+		var c: Dictionary = _climbs[i]
+		if _prev_d < c.start_m and d >= c.start_m:
+			_climb_start_s[i] = t.elapsed_s
+			var cat := ClimbView.capitalized(c.category)
+			_show_climb_banner("Début de l'ascension", "%s à %s %% · %s" % [Fmt.km(c.length_m), Fmt.num(c.avg_grade_pct, 1), cat], ClimbView.category_color(c.category))
+		if _prev_d < c.end_m and d >= c.end_m:
+			var sub := Fmt.num(c.top_elevation_m) + " m d'altitude"
+			if _climb_start_s.has(i):
+				_climb_time_s[i] = t.elapsed_s - _climb_start_s[i]
+				sub = "Ascension en %s · %s" % [Fmt.mss(_climb_time_s[i]), sub]
+			_show_climb_banner("Sommet !", sub, ClimbView.category_color(c.category))
+	_prev_d = d
+	_refresh_climb_view()
+	if _climb_shown:
+		_climb_view.position_m = d
+		_climb_view.climb_time_s = _climb_time_s.get(_climb_index, -1.0)
+		_climb_view.queue_redraw()
+
+
+## Ascension en cours à cette distance, marges comprises ; -1 sinon.
+func _climb_at(d: float) -> int:
+	for i in _climbs.size():
+		if d >= _climbs[i].start_m and d <= _climbs[i].end_m:
+			return i
+	for i in _climbs.size():
+		if d >= _climbs[i].start_m - CLIMB_MARGIN_M and d < _climbs[i].start_m:
+			return i
+	for i in _climbs.size():
+		if d > _climbs[i].end_m and d <= _climbs[i].end_m + CLIMB_MARGIN_M:
+			return i
+	return -1
+
+
+func _refresh_climb_view() -> void:
+	var index := _auto_climb
+	if index < 0:
+		# Hors d'un col, la touche P montre le prochain (ou le dernier).
+		index = _climbs.size() - 1
+		for i in _climbs.size():
+			if _climbs[i].start_m > _prev_d:
+				index = i
+				break
+	if index != _climb_index:
+		_climb_index = index
+		_climb_view.set_climb(_climbs[index], index + 1, _climbs.size())
+	var show := _auto_climb >= 0 if _manual < 0 else _manual == 1
+	if show == _climb_shown:
+		return
+	_climb_shown = show
+	# Le panneau grandit (ou rapetisse) pendant que les profils se relaient.
+	if _bottom_tween:
+		_bottom_tween.kill()
+	var incoming: Control = _climb_view if show else _profile
+	var outgoing: Control = _profile if show else _climb_view
+	incoming.visible = true
+	_bottom_tween = create_tween().set_parallel(true).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_bottom_tween.tween_method(_set_bottom_height, -14.0 - _bottom.offset_top, CLIMB_H if show else PROFILE_H, 0.45)
+	# Fond plus opaque sous le profil du col, plus chargé.
+	_bottom_tween.tween_property(_bottom.get_theme_stylebox("panel"), "bg_color:a", 0.8 if show else 0.62, 0.4)
+	_bottom_tween.tween_property(outgoing, "modulate:a", 0.0, 0.18)
+	_bottom_tween.tween_property(incoming, "modulate:a", 1.0, 0.3).set_delay(0.12)
+	_bottom_tween.tween_property(incoming, "offset_top", 0.0, 0.4).from(28.0)
+	_bottom_tween.tween_property(incoming, "offset_bottom", 0.0, 0.4).from(28.0)
+	_bottom_tween.chain().tween_callback(func(): outgoing.visible = false)
+
+
+func _set_bottom_height(h: float) -> void:
+	_bottom.offset_top = -14.0 - h
+	for l in _above_bottom:
+		l.offset_top = -14.0 - h - 28.0
+		l.offset_bottom = -14.0 - h - 6.0
+
+
+func _show_climb_banner(title: String, sub: String, accent: Color) -> void:
+	_climb_banner_title.text = title
+	_climb_banner_sub.text = sub
+	_climb_banner_sub.visible = sub != ""
+	var sb: StyleBoxFlat = _climb_banner.get_theme_stylebox("panel")
+	sb.border_color = accent
+	_climb_banner.visible = true
+	if _climb_banner_tween:
+		_climb_banner_tween.kill()
+	_climb_banner_tween = create_tween()
+	_climb_banner_tween.tween_property(_climb_banner, "modulate:a", 1.0, 0.25)
+	_climb_banner_tween.parallel().tween_property(_climb_banner_box, "offset_top", BANNER_TOP, 0.35).from(BANNER_TOP - 24.0).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_climb_banner_tween.tween_interval(CLIMB_BANNER_S)
+	_climb_banner_tween.tween_property(_climb_banner, "modulate:a", 0.0, 0.5)
+	_climb_banner_tween.tween_callback(func(): _climb_banner.visible = false)
 
 
 static func _fr(text: String) -> String:
