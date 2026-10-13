@@ -72,6 +72,10 @@ Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent 
 
 Le cycliste roule sur un vélo de route détaillé (cadre à tube incliné, cintre route, transmission, roues carbone à rayons, pneus à flancs beiges), en maillot, cuissard, chaussettes blanches, chaussures à cales, casque et lunettes. Sa position suit l'effort : pied à terre à l'arrêt, assis les mains aux cocottes, en position aéro les mains en bas du cintre sur le plat et en descente quand la puissance est élevée, en danseuse en sprint et dans les montées appuyées, le vélo balancé au rythme du pédalage. La caméra par défaut le suit de près, juste derrière, et glisse vers l'extérieur dans les virages pour le montrer un peu de côté ; C passe ensuite aux caméras arrière, de côté et haute.
 
+![Vélo de route aéro, vue trois quarts](docs/captures/velo-realiste.jpg)
+
+Le vélo est un aéro moderne modelé par champs de distance (`app/scripts/bike.gd`, mailleur Rust `velo_world::sdf`) : cadre carbone aux tubes profilés raccordés par des congés, douille conique, haubans abaissés, tige de selle intégrée, cockpit monobloc avec compteur, cocottes et guidoline, roues de 50 mm à rayons plats, freins à disque, transmission 2×12 dentée avec chaîne animée et dérailleurs, selle à rails, deux bidons. Peinture à paillettes et vernis, fibre de carbone visible, inscriptions « velotrace » ; la couleur du cadre et des bidons suit l'équipe. Les maillages (environ 80 000 triangles, 38 000 et 25 000 aux niveaux de détail suivants) sont construits une fois puis gardés dans le dossier utilisateur.
+
 Pour démarrer directement sur un parcours, sans le menu : `godot --path app -- --gpx /chemin/vers/sortie.gpx [--puissance 220] [--mode libre|seance|adversaires|test] [--seance 2] [--adversaires 5 --wkg 3.2]`.
 
 ### Décor réel
