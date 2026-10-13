@@ -17,6 +17,7 @@ pub mod race;
 pub mod raster;
 pub mod road;
 pub mod roadnet;
+pub mod sdf;
 pub mod stream;
 pub mod tiles;
 pub mod world;
