@@ -29,7 +29,9 @@ static func grade_color(grade_pct: float) -> Color:
 		return Color(0.95, 0.80, 0.25)
 	if grade_pct < 9.0:
 		return Color(0.95, 0.52, 0.20)
-	return Color(0.90, 0.22, 0.20)
+	if grade_pct < 12.0:
+		return Color(0.90, 0.22, 0.20)
+	return Color(0.66, 0.12, 0.34)
 
 
 func _to_screen(d: float, e: float) -> Vector2:

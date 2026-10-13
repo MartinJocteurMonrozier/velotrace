@@ -56,7 +56,11 @@ Sans home trainer connecté, les trois premiers modes roulent aussi avec le cycl
 
 ![Course contre des coureurs virtuels](docs/captures/app-course.jpg)
 
-Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent l'effort du cycliste virtuel, A active ou coupe les Click automatiques, C change de caméra, Espace ou Échap met en **pause**. En pause, on ajuste la difficulté des pentes, le poids, les Click automatiques, la caméra, et selon le mode l'ERG, l'intensité et l'étape de la séance, le niveau des coureurs virtuels ou l'effort du cycliste virtuel ; puis on reprend, on termine (la sortie est enregistrée) ou on abandonne sans enregistrer.
+![Mode col dans la montée de l'Alpe d'Huez](docs/captures/mode-col.jpg)
+
+**Mode col** : 100 m avant le pied de chaque ascension, le profil du bas laisse la place à celui du col seul, comme sur MyWhoosh : tronçons de 250 ou 500 m colorés selon leur pente (écrite dessus), kilomètres, drapeau à pois au sommet avec son altitude, ta position et celle des coureurs virtuels, et en tête la catégorie (4e à hors catégorie), la distance au sommet, le dénivelé restant et la pente moyenne de ce qui reste. Un bandeau annonce le début de l'ascension (longueur, pente, catégorie), un autre le sommet avec le temps de montée ; 100 m après le sommet, le profil du parcours revient. P bascule à tout moment entre le profil du parcours et celui du col en cours ou du prochain.
+
+Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent l'effort du cycliste virtuel, A active ou coupe les Click automatiques, C change de caméra, P affiche le profil du col ou du parcours, Espace ou Échap met en **pause**. En pause, on ajuste la difficulté des pentes, le poids, les Click automatiques, la caméra, et selon le mode l'ERG, l'intensité et l'étape de la séance, le niveau des coureurs virtuels ou l'effort du cycliste virtuel ; puis on reprend, on termine (la sortie est enregistrée) ou on abandonne sans enregistrer.
 
 ![Pause pendant une séance](docs/captures/app-pause.jpg)
 
@@ -71,6 +75,10 @@ Pendant la sortie : ↑ et ↓ changent de vitesse (Click), ← et → règlent 
 ![En danseuse dans la montée, caméra proche](docs/captures/cycliste-danseuse.jpg)
 
 Le cycliste, un corps humain complet, sec et musclé, tiré des modèles libres (CC0) de MakeHuman, roule sur un vélo de route détaillé (cadre à tube incliné, cintre route, transmission, roues carbone à rayons, pneus à flancs beiges). Un squelette l'anime : bassin basculé, dos arrondi, épaules, coudes, poignets et chevilles suivent le vélo et les doigts se referment sur le cintre. Il porte un maillot aux couleurs de son équipe (flancs, bande de poitrine, manches à liseré), un cuissard noir, des mitaines, des chaussettes blanches, des chaussures à molette et cales, un casque ventilé et des lunettes à verres miroir ; le maillage est reconstruit par `tools/rider/build_rider.py` (voir `app/assets/rider/LICENSE.md`). Sa position suit l'effort : pied à terre à l'arrêt, assis les mains aux cocottes, en position aéro les mains en bas du cintre sur le plat et en descente quand la puissance est élevée, en danseuse en sprint et dans les montées appuyées, le vélo balancé au rythme du pédalage. La caméra par défaut le suit de près, juste derrière, et glisse vers l'extérieur dans les virages pour le montrer un peu de côté ; C passe ensuite aux caméras arrière, de côté et haute.
+
+![Vélo de route aéro, vue trois quarts](docs/captures/velo-realiste.jpg)
+
+Le vélo est un aéro moderne modelé par champs de distance (`app/scripts/bike.gd`, mailleur Rust `velo_world::sdf`) : cadre carbone aux tubes profilés raccordés par des congés, douille conique, haubans abaissés, tige de selle intégrée, cockpit monobloc avec compteur, cocottes et guidoline, roues de 50 mm à rayons plats, freins à disque, transmission 2×12 dentée avec chaîne animée et dérailleurs, selle à rails, deux bidons. Peinture à paillettes et vernis, fibre de carbone visible, inscriptions « velotrace » ; la couleur du cadre et des bidons suit l'équipe. Les maillages (environ 80 000 triangles, 38 000 et 25 000 aux niveaux de détail suivants) sont construits une fois puis gardés dans le dossier utilisateur.
 
 Pour démarrer directement sur un parcours, sans le menu : `godot --path app -- --gpx /chemin/vers/sortie.gpx [--puissance 220] [--mode libre|seance|adversaires|test] [--seance 2] [--adversaires 5 --wkg 3.2]`.
 

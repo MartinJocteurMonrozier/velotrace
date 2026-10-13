@@ -298,6 +298,8 @@ func _build_scene(real: bool) -> void:
 	_hud = Hud.new()
 	add_child(_hud)
 	_hud.setup(ride.route_name(), ride.route_distances(), local, _base_elev)
+	# Après le décor réel, les ascensions suivent l'altitude du relief.
+	_hud.setup_climbs(ride.route_climbs())
 	_hud.set_credits(ride.world_credits() if real else "Décor simplifié")
 	_hud.setup_mode(_cfg)
 
@@ -450,7 +452,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			ride.set_auto_shift(_auto_shift)
 		KEY_C:
 			_camera_mode = (_camera_mode + 1) % CAMERA_MODES
-		KEY_SPACE, KEY_ESCAPE, KEY_P:
+		KEY_P:
+			_hud.toggle_profile()
+		KEY_SPACE, KEY_ESCAPE:
 			_open_pause()
 	get_viewport().set_input_as_handled()
 
