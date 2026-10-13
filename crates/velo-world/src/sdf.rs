@@ -898,6 +898,9 @@ impl Sdf {
                 }
             }
         }
+        // Les fils rendent les blocs dans un ordre variable : on les trie pour que
+        // la numérotation des sommets, donc la simplification, soit reproductible.
+        blocks.sort_unstable_by_key(|b| b.key);
         let all_len = (nb[0] * nb[1] * nb[2]) as usize;
         if timing {
             eprintln!(
@@ -1102,7 +1105,7 @@ impl Sdf {
             let idx = &tris[&m];
             let opts =
                 meshopt::SimplifyOptions::LockBorder | meshopt::SimplifyOptions::ErrorAbsolute;
-            let simple = meshopt::simplify_decoder(idx, &verts, 0, error, opts, None);
+            let simple = drop_fins(meshopt::simplify_decoder(idx, &verts, 0, error, opts, None));
             let mut remap: HashMap<u32, i32> = HashMap::new();
             let mut mesh = MeshData::default();
             let mut take = |v: u32, mesh: &mut MeshData| -> i32 {
@@ -1124,14 +1127,14 @@ impl Sdf {
             let mut lods = Vec::new();
             let mut prev = simple.clone();
             for &e in lod_errors {
-                let l = meshopt::simplify_decoder(
+                let l = drop_fins(meshopt::simplify_decoder(
                     &prev,
                     &verts,
                     0,
                     e,
                     opts | meshopt::SimplifyOptions::Sparse,
                     None,
-                );
+                ));
                 prev = l.clone();
                 if l.len() * 10 > simple.len() * 9 {
                     continue;
@@ -1150,6 +1153,39 @@ impl Sdf {
         }
         out
     }
+}
+
+/// Supprime les ailerons laissés par la simplification : il arrive qu'un
+/// effondrement d'arête referme deux triangles dos à dos sur les mêmes trois
+/// sommets, accrochés à une arête de la surface (qui se retrouve alors
+/// partagée par quatre triangles). Chaque paire de triangles aux mêmes
+/// sommets s'annule ; l'ordre des triangles restants est conservé.
+fn drop_fins(idx: Vec<u32>) -> Vec<u32> {
+    let key = |t: &[u32]| {
+        let mut k = [t[0], t[1], t[2]];
+        k.sort_unstable();
+        k
+    };
+    let mut count: HashMap<[u32; 3], u32> = HashMap::new();
+    for t in idx.chunks(3) {
+        *count.entry(key(t)).or_default() += 1;
+    }
+    if count.len() * 3 == idx.len() {
+        return idx;
+    }
+    // Pour une clé vue n fois, on garde n mod 2 triangle (le premier).
+    let mut seen: HashMap<[u32; 3], u32> = HashMap::new();
+    let mut out = Vec::with_capacity(idx.len());
+    for t in idx.chunks(3) {
+        let k = key(t);
+        let n = count[&k];
+        let i = seen.entry(k).or_default();
+        *i += 1;
+        if n % 2 == 1 && *i == 1 {
+            out.extend_from_slice(t);
+        }
+    }
+    out
 }
 
 /// Retourne les triangles repliés : après recalage des sommets sur la surface
@@ -1178,7 +1214,9 @@ pub fn lods(positions: &[V3], indices: &[u32], errors: &[f32]) -> Vec<(f32, Vec<
     let mut out = Vec::new();
     let mut prev = indices.to_vec();
     for &e in errors {
-        let l = meshopt::simplify_decoder(&prev, positions, 0, e, opts, None);
+        let l = drop_fins(meshopt::simplify_decoder(
+            &prev, positions, 0, e, opts, None,
+        ));
         prev = l.clone();
         if l.len() * 10 > indices.len() * 9 {
             continue;
@@ -1276,6 +1314,15 @@ mod tests {
         assert_eq!(border, 0);
         assert_eq!(nonman, 0);
         assert!(m.indices.len() / 3 < 20_000, "{}", m.indices.len() / 3);
+    }
+
+    #[test]
+    fn fins_cancel_in_pairs() {
+        // Deux triangles dos à dos sur 0-1-2 (aileron), un doublon impair sur 3-4-5.
+        let idx = vec![0, 1, 2, 2, 1, 0, 3, 4, 5, 6, 7, 8, 5, 4, 3, 3, 5, 4];
+        assert_eq!(drop_fins(idx), vec![3, 4, 5, 6, 7, 8]);
+        let clean = vec![0, 1, 2, 0, 2, 3];
+        assert_eq!(drop_fins(clean.clone()), clean);
     }
 
     #[test]

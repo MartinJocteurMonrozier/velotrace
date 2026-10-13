@@ -62,7 +62,7 @@ const LOD_ERRORS := [0.0012, 0.004]
 ## dans le dossier utilisateur. Changer CACHE_VERSION si le modelage de
 ## l'extension (VeloSdf) change.
 const CACHE_DIR := "user://cache"
-const CACHE_VERSION := 2
+const CACHE_VERSION := 3
 static var use_cache := true
 
 # Matériaux partagés (indices des surfaces).
